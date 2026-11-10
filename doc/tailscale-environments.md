@@ -69,3 +69,8 @@ ProxyCommand. Target hosts and socket paths are validated before that command is
 created. Startup readiness has a fixed deadline and each client call has a
 timeout. Login has a separate thirty-second limit. Neither starts an idle
 polling loop.
+
+When a network client stops, new tasks wait for its state write and cleanup before
+connecting again. A replacement client reloads the latest authorized secret
+version after that wait. Shutdown also cancels queued reconnects and pending
+credential loads so they cannot start another daemon after cleanup.

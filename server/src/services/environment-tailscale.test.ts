@@ -48,6 +48,21 @@ describe("Tailscale environment credential boundary", () => {
     expect(mocks.secrets.resolveSecretValue).not.toHaveBeenCalled();
   });
 
+  it("refreshes the credential version after cleanup before storing a replacement identity", async () => {
+    mocks.secrets.resolveSecretVersion.mockResolvedValueOnce(7).mockResolvedValueOnce(9);
+    mocks.secrets.resolveSecretValue.mockResolvedValueOnce("stale-state").mockResolvedValueOnce("current-state");
+    mocks.connect.mockImplementation(async ({ reload, persist }) => {
+      expect(await reload()).toBe("current-state");
+      await persist("replacement-state");
+      return "/tmp/replacement/socket";
+    });
+    await resolveEnvironmentDriverConfigForRuntime(db, "company-one", environment);
+    expect(mocks.secrets.resolveSecretValue).toHaveBeenLastCalledWith("company-one", environment.config.tailscaleAuthKeySecretRef.secretId, 9,
+      expect.objectContaining({ consumerType: "environment", consumerId: environment.id, configPath: "tailscaleAuthKeySecretRef" }));
+    expect(mocks.secrets.rotate).toHaveBeenCalledWith(environment.config.tailscaleAuthKeySecretRef.secretId,
+      { value: "replacement-state", expectedLatestVersion: 9 });
+  });
+
   it("requires company and environment context, and never falls back to direct SSH", async () => {
     await expect(resolveEnvironmentDriverConfigForRuntime(db, null, environment)).rejects.toThrow("company context");
     await expect(resolveEnvironmentDriverConfigForRuntime(db, "company-one", { ...environment, id: undefined })).rejects.toThrow("company context");

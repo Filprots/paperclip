@@ -702,6 +702,10 @@ export async function resolveEnvironmentDriverConfigForRuntime(
         config.tailscaleSocket = await tailscaleNetworks.connect({
           identity: config.tailscaleIdentity,
           credential: value,
+          reload: async () => {
+            version = await secrets.resolveSecretVersion(companyId!, binding.secretId, "latest", secretContext);
+            return secrets.resolveSecretValue(companyId!, binding.secretId, version, secretContext);
+          },
           persist: async (credential) => {
             await secrets.rotate(binding.secretId, { value: credential, expectedLatestVersion: version });
             version += 1;
