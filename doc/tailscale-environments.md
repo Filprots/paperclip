@@ -25,6 +25,11 @@ has a private socket and state directory. Connections from different companies
 use separate identities. A saved connection secret can be shared deliberately
 by multiple environments in its company.
 
+This transport currently supports one serving process per Paperclip instance.
+Do not restore the same connection identity in separate server replicas at the
+same time. Replicated execution needs a shared connection-ownership lease before
+it can use this transport.
+
 The initial key is stored through the configured company secret provider. After
 the first connection, Paperclip replaces its current secret value with the
 Tailscale node state before allowing task execution. This preserves the identity
