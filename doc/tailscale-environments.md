@@ -37,8 +37,11 @@ across restarts and allows single-use auth keys. The key and node state never
 appear in environment API responses, task arguments, or logs. The local key file
 is removed after login. Node state is restored into a private temporary directory
 and removed when the network client stops. The host requires `tailscale` and
-`tailscaled` on its PATH; the Cloud image supplies both. No daemon starts for
-direct SSH environments or during server startup.
+`tailscaled` on its PATH. The production and Cloud Docker targets supply
+checksum-pinned 1.104.5 binaries for Linux amd64 and arm64. Their build runs both
+programs as the unprivileged node user. The PR image check also builds and tests
+the client stage. No daemon starts for direct SSH environments or during server
+startup.
 
 Enter a new auth key to reconnect when a node is revoked, its key expires, or
 the machine moves to another tailnet. Deleting an environment removes its secret
@@ -57,3 +60,12 @@ release, qualify a real tailnet: save a single-use key, run a task that writes
 a file on the target, read the result through Paperclip, restart the Cloud
 instance, and repeat without entering another key. Also test a denied tailnet
 policy and a revoked node. Fixture tests do not establish this live proof.
+
+The connection manager uses one network identity per authorized company secret.
+SSH receives only a server-resolved socket and identity. Environment configuration
+cannot set the runtime socket path. The temporary socket lives under `/tmp` so
+its path stays short and contains no shell metacharacters when OpenSSH evaluates
+ProxyCommand. Target hosts and socket paths are validated before that command is
+created. Startup readiness has a fixed deadline and each client call has a
+timeout. Login has a separate thirty-second limit. Neither starts an idle
+polling loop.

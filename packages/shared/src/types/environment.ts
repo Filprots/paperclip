@@ -12,11 +12,9 @@ export interface LocalEnvironmentConfig {
 }
 
 export interface SshEnvironmentConfig {
-  /** Connect to an existing machine directly or through an isolated tailnet client. */
   network?: "direct" | "tailscale";
   tailscaleAuthKey?: string | null;
   tailscaleAuthKeySecretRef?: EnvSecretRefBinding | null;
-  /** Server-resolved socket; never accepted or persisted by the config API. */
   tailscaleSocket?: string;
   tailscaleIdentity?: string;
   host: string;

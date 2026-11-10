@@ -10,7 +10,6 @@ const MAX_STATE_BYTES = 2 * 1024 * 1024;
 
 type Connection = { credential: string; savedCredential?: string; child?: ChildProcess; ready: Promise<string>; close: () => Promise<void> };
 
-/** Each secret represents one tailnet identity, shared only by its authorized environments. */
 export function createTailscaleNetworkManager(commands: { cli?: string; daemon?: string } = {}) {
   const connections = new Map<string, Connection>();
 
@@ -71,7 +70,6 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
         if (connections.get(input.identity) === connection) connections.delete(input.identity);
       }
     })();
-    // /tmp keeps the ProxyCommand path short and free of shell metacharacters.
     dir = await fs.mkdtemp(path.join(os.platform() === "win32" ? os.tmpdir() : "/tmp", "paperclip-ts-"));
     if (closed) { await fs.rm(dir, { recursive: true, force: true }); throw new Error("Tailscale stopped"); }
     await fs.chmod(dir, 0o700);
@@ -91,7 +89,6 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
       if (failed || closed) throw new Error("Tailscale stopped");
       return exec(commands.cli ?? "tailscale", [`--socket=${socket}`, ...args], { timeout, maxBuffer: MAX_STATE_BYTES });
     };
-    // Bounded readiness for this active connection attempt; no idle polling.
     const deadline = Date.now() + 5_000;
     for (;;) {
       try { await cli(["status", "--json"]); break; } catch {

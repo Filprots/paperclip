@@ -397,8 +397,6 @@ async function createSshAuthArgs(
   if (config.tailscaleIdentity && !config.tailscaleSocket) throw new Error("Tailscale connection is unavailable");
   if (config.tailscaleSocket) {
     if (!net.isIP(config.host) && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(config.host)) throw new Error("Invalid Tailscale host");
-    // OpenSSH invokes ProxyCommand through a shell. Only a server-owned,
-    // validated socket path is interpolated; targets use OpenSSH tokens.
     if (!/^\/[A-Za-z0-9_./-]+$/.test(config.tailscaleSocket)) throw new Error("Invalid Tailscale socket path");
     sshArgs.push("-o", `ProxyCommand=tailscale --socket=${config.tailscaleSocket} nc %h %p`);
   }

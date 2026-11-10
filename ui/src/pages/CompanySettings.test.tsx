@@ -215,7 +215,7 @@ describe("CompanyEnvironments", () => {
     });
   });
 
-  it("omits the Local driver option and lists Sandbox before SSH", async () => {
+  it("omits the Local driver option and lists Sandbox before SSH and Tailscale", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -260,7 +260,7 @@ describe("CompanyEnvironments", () => {
 
     const driverOptionValues = Array.from(driverSelect!.options).map((option) => option.value);
     expect(driverOptionValues).not.toContain("local");
-    expect(driverOptionValues).toEqual(["sandbox", "ssh"]);
+    expect(driverOptionValues).toEqual(["sandbox", "ssh", "tailscale"]);
 
     await act(async () => {
       root.unmount();
