@@ -70,6 +70,9 @@ type EnvironmentFormState = {
   name: string;
   description: string;
   driver: "local" | "ssh" | "sandbox";
+  sshNetwork: "direct" | "tailscale";
+  tailscaleAuthKey: string;
+  tailscaleAuthKeySecretId: string;
   sshHost: string;
   sshPort: string;
   sshUsername: string;
@@ -126,6 +129,9 @@ function buildEnvironmentPayload(form: EnvironmentFormState) {
     config:
       form.driver === "ssh"
         ? {
+            ...(form.sshNetwork === "tailscale" ? { network: "tailscale" as const, tailscaleAuthKey: form.tailscaleAuthKey.trim() || null,
+              tailscaleAuthKeySecretRef: form.tailscaleAuthKey.trim() || !form.tailscaleAuthKeySecretId ? null
+                : { type: "secret_ref" as const, secretId: form.tailscaleAuthKeySecretId, version: "latest" as const } } : {}),
             host: form.sshHost.trim(),
             port: Number.parseInt(form.sshPort || "22", 10) || 22,
             username: form.sshUsername.trim(),
@@ -152,6 +158,9 @@ function createEmptyEnvironmentForm(): EnvironmentFormState {
     name: "",
     description: "",
     driver: "ssh",
+    sshNetwork: "direct",
+    tailscaleAuthKey: "",
+    tailscaleAuthKeySecretId: "",
     sshHost: "",
     sshPort: "22",
     sshUsername: "",
@@ -182,6 +191,9 @@ function normalizeNonLocalEnvironmentId(
 function readSshConfig(environment: Environment) {
   const config = environment.config ?? {};
   return {
+    network: config.network === "tailscale" ? "tailscale" as const : "direct" as const,
+    tailscaleAuthKeySecretId: typeof (config.tailscaleAuthKeySecretRef as { secretId?: unknown } | null)?.secretId === "string"
+      ? (config.tailscaleAuthKeySecretRef as { secretId: string }).secretId : "",
     host: typeof config.host === "string" ? config.host : "",
     port:
       typeof config.port === "number"
@@ -227,6 +239,8 @@ function createEnvironmentFormFromEnvironment(environment: Environment): Environ
       name: environment.name,
       description: environment.description ?? "",
       driver: "ssh",
+      sshNetwork: ssh.network,
+      tailscaleAuthKeySecretId: ssh.tailscaleAuthKeySecretId,
       sshHost: ssh.host,
       sshPort: ssh.port,
       sshUsername: ssh.username,
@@ -1850,7 +1864,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       (
         environmentForm.sshHost.trim().length > 0 &&
         environmentForm.sshUsername.trim().length > 0 &&
-        environmentForm.sshRemoteWorkspacePath.trim().length > 0
+        environmentForm.sshRemoteWorkspacePath.trim().length > 0 &&
+        (environmentForm.sshNetwork !== "tailscale" || environmentForm.tailscaleAuthKey.trim().length > 0 || !!environmentForm.tailscaleAuthKeySecretId)
       )) &&
     (environmentForm.driver !== "sandbox" ||
       environmentForm.sandboxProvider.trim().length > 0 &&
@@ -2044,7 +2059,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                       <span>
                         {environment.name}
                         {isPlatformManagedEnvironment(environment) ? null : (
-                          <span className="text-muted-foreground"> · {environment.driver}</span>
+                          <span className="text-muted-foreground"> · {environment.driver === "ssh" && environment.config.network === "tailscale" ? "Tailscale" : environment.driver}</span>
                         )}
                       </span>
                       {isPlatformManagedEnvironment(environment) ? (
@@ -2267,10 +2282,10 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   onChange={(e) => setEnvironmentForm((current) => ({ ...current, description: e.target.value }))}
                 />
               </Field>
-              <Field label="Driver" hint="Sandbox stores plugin-backed provider config on the shared environment seam. SSH stores a remote machine target.">
+              <Field label="Driver" hint="Choose where agent tasks run. SSH and Tailscale connect to a machine you own.">
                 <select
                   className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                  value={environmentForm.driver}
+                  value={environmentForm.driver === "ssh" && environmentForm.sshNetwork === "tailscale" ? "tailscale" : environmentForm.driver}
                   onChange={(e) =>
                     setEnvironmentForm((current) => ({
                       ...current,
@@ -2289,12 +2304,14 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                             )
                           : current.sandboxConfig,
                       driver: e.target.value === "sandbox" ? "sandbox" : "ssh",
+                      sshNetwork: e.target.value === "tailscale" ? "tailscale" : "direct",
                     }))}
                 >
                   {sandboxCreationEnabled || environmentForm.driver === "sandbox" ? (
                     <option value="sandbox">Sandbox</option>
                   ) : null}
                   <option value="ssh">SSH</option>
+                  <option value="tailscale">Tailscale</option>
                   {environmentForm.driver === "local" ? (
                     <option value="local">Local</option>
                   ) : null}
@@ -2303,7 +2320,21 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
 
               {environmentForm.driver === "ssh" ? (
                 <div className="grid gap-3 md:grid-cols-2">
-                  <Field label="Host" hint="DNS name or IP address for the remote machine.">
+                  {environmentForm.sshNetwork === "tailscale" ? (
+                    <div className="md:col-span-2">
+                      <Field label="Tailscale connection key" hint={environmentForm.tailscaleAuthKeySecretId
+                        ? "A connection is saved. Enter a new device auth key to reconnect to a tailnet."
+                        : "Create a device auth key in your tailnet. Paperclip uses it to connect to your machine; the key is stored as a secret."}>
+                        <input type="password" autoComplete="new-password" aria-label="Tailscale connection key"
+                          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                          value={environmentForm.tailscaleAuthKey}
+                          onChange={(e) => setEnvironmentForm((current) => ({ ...current, tailscaleAuthKey: e.target.value }))}
+                          placeholder={environmentForm.tailscaleAuthKeySecretId ? "Connection saved" : "tskey-auth-…"} />
+                      </Field>
+                      <p className="text-sm text-muted-foreground">Tasks run over SSH on this machine. Allow the Paperclip connection to reach its SSH port in your tailnet policy.</p>
+                    </div>
+                  ) : null}
+                  <Field label="Host" hint={environmentForm.sshNetwork === "tailscale" ? "Tailscale IP address or MagicDNS name of your machine." : "DNS name or IP address for the remote machine."}>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                       type="text"
@@ -2508,7 +2539,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               <Button
                 variant="outline"
                 onClick={() => draftEnvironmentProbeMutation.mutate(flushEnvironmentForm())}
-                disabled={draftEnvironmentProbeMutation.isPending || !environmentFormValid}
+                disabled={draftEnvironmentProbeMutation.isPending || !environmentFormValid || (environmentForm.driver === "ssh" && environmentForm.sshNetwork === "tailscale")}
+                title={environmentForm.driver === "ssh" && environmentForm.sshNetwork === "tailscale" ? "Save this environment, then test its connection from the list." : undefined}
               >
                 {draftEnvironmentProbeMutation.isPending ? "Testing..." : "Test"}
               </Button>

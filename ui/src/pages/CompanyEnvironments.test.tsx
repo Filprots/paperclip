@@ -724,6 +724,29 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(getEnvironmentFormPage()).toBeNull();
   });
 
+  it("configures a Tailscale machine as an SSH execution environment", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([{ id: "env-tailnet", name: "My workstation", driver: "ssh", description: null, envVars: {},
+      config: { network: "tailscale", host: "workstation", port: 22, username: "developer", remoteWorkspacePath: "/workspace",
+        tailscaleAuthKeySecretRef: { type: "secret_ref", secretId: "connection-secret", version: "latest" }, strictHostKeyChecking: true } }]);
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-tailnet/edit`)); });
+    await waitForAssertion(() => { expect(getEnvironmentFormPage()?.textContent).toContain("Tailscale connection key"); });
+    const page = getEnvironmentFormPage()!;
+    const driver = Array.from(page.querySelectorAll("select")).find(select => select.querySelector('option[value="tailscale"]'))!;
+    expect(driver.value).toBe("tailscale");
+    expect(page.textContent).toContain("Tasks run over SSH on this machine");
+    const key = page.querySelector<HTMLInputElement>('input[aria-label="Tailscale connection key"]')!;
+    expect(key.type).toBe("password");
+    expect(key.value).toBe("");
+    expect(findButton(page, "Test")?.disabled).toBe(true);
+    await act(async () => { click(findButton(page, "Save environment")); });
+    await waitForAssertion(() => { expect(mockEnvironmentsApi.update).toHaveBeenCalledWith("env-tailnet", expect.objectContaining({ driver: "ssh", config: expect.objectContaining({
+      network: "tailscale", host: "workstation", username: "developer", remoteWorkspacePath: "/workspace", tailscaleAuthKey: null,
+      tailscaleAuthKeySecretRef: { type: "secret_ref", secretId: "connection-secret", version: "latest" },
+    }) }), "company-1"); });
+  });
+
   it("opens the edit form on a standalone page with existing values and closes after save", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

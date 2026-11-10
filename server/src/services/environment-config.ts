@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { tailscaleNetworks } from "./tailscale-network.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -38,6 +39,9 @@ const secretRefSchema = z.object({
 }).strict();
 
 const sshEnvironmentConfigSchema = z.object({
+  network: z.enum(["direct", "tailscale"]).optional(),
+  tailscaleAuthKey: z.null().optional(),
+  tailscaleAuthKeySecretRef: secretRefSchema.extend({ version: z.literal("latest").optional().default("latest") }).optional().nullable(),
   host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
   username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
@@ -58,6 +62,7 @@ const sshEnvironmentConfigSchema = z.object({
 }).strict();
 
 const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
+  tailscaleAuthKey: z.string().trim().regex(/^tskey-auth-[A-Za-z0-9_-]+$/, "Enter a Tailscale device auth key.").optional().nullable(),
   privateKey: z
     .string()
     .trim()
@@ -375,12 +380,11 @@ export async function collectEnvironmentSecretRefs(input: {
   environment: Pick<Environment, "id" | "driver" | "config">;
 }): Promise<Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }>> {
   const parsed = parseEnvironmentDriverConfig(input.environment);
-  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
-    return [{
-      secretId: parsed.config.privateKeySecretRef.secretId,
-      configPath: "privateKeySecretRef",
-      versionSelector: parsed.config.privateKeySecretRef.version ?? "latest",
-    }];
+  if (parsed.driver === "ssh") {
+    return (["privateKeySecretRef", "tailscaleAuthKeySecretRef"] as const).flatMap(configPath => {
+      const binding = parsed.config[configPath];
+      return binding ? [{ secretId: binding.secretId, configPath, versionSelector: binding.version ?? "latest" }] : [];
+    });
   }
   if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
     const schema = await getSandboxProviderConfigSchema(input.db, parsed.config.provider);
@@ -561,7 +565,10 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
       });
     }
     const secrets = secretService(input.db);
-    const { privateKey, ...stored } = parsed.data;
+    const { privateKey, tailscaleAuthKey, ...stored } = parsed.data;
+    const tailscaleAuthKeySecretRef = tailscaleAuthKey
+      ? await createEnvironmentSecret({ ...input, field: "tailscale-connection", provider: input.secretProvider, value: tailscaleAuthKey })
+      : stored.tailscaleAuthKeySecretRef;
     let nextPrivateKeySecretRef = stored.privateKeySecretRef;
     if (privateKey) {
       nextPrivateKeySecretRef = await createEnvironmentSecret({
@@ -583,6 +590,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
     }
     return {
       ...stored,
+      ...(tailscaleAuthKeySecretRef ? { tailscaleAuthKey: null, tailscaleAuthKeySecretRef } : {}),
       privateKey: null,
       privateKeySecretRef: nextPrivateKeySecretRef,
     } satisfies SshEnvironmentConfig;
@@ -670,34 +678,41 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   const parsed = parseEnvironmentDriverConfig(environment);
   const secrets = secretService(db);
   const environmentId = environment.id;
-  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef && !environmentId) {
-    throw unprocessable("Runtime secret resolution requires an environment id");
-  }
-
-  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
-    if (!companyId) {
-      throw unprocessable("Runtime secret resolution requires a companyId context");
-    }
-    return {
-      driver: "ssh",
-      config: {
-        ...parsed.config,
-        privateKey: await secrets.resolveSecretValue(
-          companyId,
-          parsed.config.privateKeySecretRef.secretId,
-          parsed.config.privateKeySecretRef.version ?? "latest",
-          {
-            consumerType: "environment",
-            consumerId: environmentId!,
-            actorType: "system",
-            actorId: null,
-            issueId: context?.issueId ?? null,
-            heartbeatRunId: context?.heartbeatRunId ?? null,
-            configPath: "privateKeySecretRef",
-          },
-        ),
-      },
+  if (parsed.driver === "ssh") {
+    const config = { ...parsed.config };
+    const bindingContext = (configPath: string) => {
+      if (!environmentId || !companyId) throw unprocessable("Runtime secret resolution requires an environment and company context");
+      return { consumerType: "environment" as const, consumerId: environmentId,
+        actorType: "system" as const, actorId: null, issueId: context?.issueId ?? null,
+        heartbeatRunId: context?.heartbeatRunId ?? null, configPath };
     };
+    if (config.privateKeySecretRef) {
+      const binding = config.privateKeySecretRef;
+      config.privateKey = await secrets.resolveSecretValue(companyId!, binding.secretId,
+        binding.version ?? "latest", bindingContext("privateKeySecretRef"));
+    }
+    if (config.network === "tailscale" && !context?.readOnlyInspection) {
+      const binding = config.tailscaleAuthKeySecretRef;
+      if (!binding) throw unprocessable("Connect Tailscale before running tasks in this environment.");
+      const secretContext = bindingContext("tailscaleAuthKeySecretRef");
+      let version = await secrets.resolveSecretVersion(companyId!, binding.secretId, "latest", secretContext);
+      const value = await secrets.resolveSecretValue(companyId!, binding.secretId, version, secretContext);
+      config.tailscaleIdentity = `${companyId}:${binding.secretId}`;
+      try {
+        config.tailscaleSocket = await tailscaleNetworks.connect({
+          identity: config.tailscaleIdentity,
+          credential: value,
+          persist: async (credential) => {
+            await secrets.rotate(binding.secretId, { value: credential, expectedLatestVersion: version });
+            version += 1;
+          },
+        });
+      } catch {
+        throw unprocessable("Tailscale could not connect. Check the connection key and tailnet policy, then reconnect this environment.",
+          { code: "tailscale_connection_failed" });
+      }
+    }
+    return { driver: "ssh", config };
   }
 
   if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {

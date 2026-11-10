@@ -85,6 +85,7 @@ export function buildRemoteExecutionSessionIdentity(spec: SshRemoteExecutionSpec
   if (!spec) return null;
   return {
     transport: "ssh",
+    ...(spec.tailscaleIdentity ? { tailscaleIdentity: spec.tailscaleIdentity } : {}),
     host: spec.host,
     port: spec.port,
     username: spec.username,
@@ -99,6 +100,7 @@ export function remoteExecutionSessionMatches(saved: unknown, current: SshRemote
   const parsedSaved = asObject(saved);
   return (
     asString(parsedSaved.transport) === currentIdentity.transport &&
+    asString(parsedSaved.tailscaleIdentity) === asString(currentIdentity.tailscaleIdentity) &&
     asString(parsedSaved.host) === currentIdentity.host &&
     asNumber(parsedSaved.port) === currentIdentity.port &&
     asString(parsedSaved.username) === currentIdentity.username &&

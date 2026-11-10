@@ -1,3 +1,4 @@
+import { tailscaleNetworks } from "./services/tailscale-network.js";
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { closeProcessRunAdmission } from "./services/heartbeat/run-admission.js";
 import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
@@ -2199,7 +2200,9 @@ async function startServerWithDatabaseTeardown(
     await finalizeServerShutdown({
       signal,
       shutdownAppServices: async () => {
-        try { await appShutdown?.(); } finally { await stopControllerInstanceLease(); }
+        try { await appShutdown?.(); } finally {
+          try { await tailscaleNetworks.close(); } finally { await stopControllerInstanceLease(); }
+        }
       },
       closeHttpListener: () =>
         closeHttpListenerForShutdown({ server, signal, log: logger }),
