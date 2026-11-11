@@ -158,7 +158,8 @@ export async function readyPortableTaskSource(db: Db, companyId: string, targetL
   assertPluginTaskOwnershipDispatch(target, operation.data);
   const [source] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, companyId),
     eq(environmentLeases.id, claim.sourceLeaseId)));
-  if (!source || source.providerLeaseId !== operation.data.sourceTaskId ||
+  if (!source || source.provider !== target.provider || source.providerLeaseId !== operation.data.sourceTaskId ||
+      leaseGeneration(source) !== operation.data.sourceGeneration ||
       nativeSha256(source.metadata?.portableTaskSuccessor ?? null) !== nativeSha256(claim)) return unavailable();
   return operation.data.sourceTaskId;
 }

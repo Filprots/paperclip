@@ -177,6 +177,22 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     expect(source.metadata?.remoteExecutionTermination).toBeUndefined();
     await expect(f.oldWriter(f.checkpoint)).rejects.toThrow("native_runner_checkpoint_owner_lost");
     await expect(targetWriter(f.checkpoint)).resolves.toBeUndefined();
+
+    const readState = { kind: "read_state", identity: f.identity } as const;
+    await expect(f.task({ ...readState, identity: { ...f.identity, itemId: "wrong-item" } }))
+      .rejects.toThrow("ownership_unverified");
+    f.workers.call.mockResolvedValueOnce({ kind: "state", taskId: "replacement-task", state: { ...f.identity } });
+    await expect(f.task(readState)).resolves.toMatchObject({ kind: "state", state: f.identity });
+    const nextIdentity = { ...f.identity, runId: f.runId, turnId: "target-turn", itemId: "target-item" };
+    const attach = { ...f.operation, resumeFrom: undefined, priorIdentity: f.identity,
+      requirements: { ...f.operation.requirements, identity: nextIdentity } };
+    await expect(f.task({ ...attach, requirements: { ...attach.requirements,
+      identity: { ...nextIdentity, normalizedSessionId: randomUUID() } } })).rejects.toThrow("prior identity mismatch");
+    await expect(f.task(attach)).resolves.toMatchObject({ kind: "prepared" });
+    await expect(f.task(attach)).resolves.toMatchObject({ kind: "prepared" });
+    const [attached] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    expect(attached.metadata?.runnerTaskIdentity).toMatchObject({ runId: f.runId, sessionId: f.identity.normalizedSessionId });
+    expect(attached.metadata?.runnerTaskPriorIdentity).toMatchObject({ runId: f.sourceRunId, itemId: f.identity.itemId });
   });
 
   it.each(["codex", "claude"] as const)("authorizes the claimed %s source while preserving A's accepted outcome", async provider => {
