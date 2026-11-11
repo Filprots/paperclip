@@ -115,6 +115,15 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("connection") }).strict(),
   z.object({ kind: z.literal("release"), identity: durableIdentity }).strict(),
   z.object({ kind: z.literal("resume"), identity: durableIdentity, bootstrapTicket: credentialValue }).strict(),
+  z.object({
+    kind: z.literal("ensure_ownership"),
+    operationId: z.string().uuid(),
+    identity: durableIdentity,
+    sourceTaskId: providerId.max(1024),
+    sourceGeneration: providerId.max(1024),
+    targetGeneration: providerId.max(1024),
+    policy: z.enum(["ordinary", "reclaim_if_needed"]),
+  }).strict(),
   z.object({ kind: z.literal("complete") }).strict(),
   z.object({ kind: z.literal("stop") }).strict(),
 ]);
@@ -123,6 +132,13 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("accepted"), taskId: providerId }).strict(),
   z.object({ kind: z.literal("released"), taskId: providerId }).strict(),
   z.object({ kind: z.literal("resume"), taskId: providerId, outcome: z.enum(["resumed", "unavailable"]) }).strict(),
+  z.object({
+    kind: z.literal("ownership"),
+    taskId: providerId,
+    operationId: z.string().uuid(),
+    targetGeneration: providerId.max(1024),
+    status: z.enum(["pending", "ready"]),
+  }).strict(),
   z.object({ kind: z.literal("copilot_metadata"), taskId: providerId, metadata: z.record(z.string(), z.unknown()),
     executionStopped: z.literal(true) }).strict(),
   z.object({ kind: z.literal("project_auth"), taskId: providerId, configurationId: providerId.max(1024),
@@ -140,6 +156,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     runner: z.object({ version: z.string().min(1), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
     warmTaskVersion: z.literal(1).optional(),
     releaseResumeVersion: z.literal(1).optional(),
+    portableOwnershipVersion: z.literal(1).optional(),
     launchPreparationVersion: z.literal(1).optional(),
     executionContextVersion: z.literal(1).optional(),
     /** Each version attests stopped-source recovery for its provider independently. */
@@ -209,6 +226,13 @@ export interface PluginEnvironmentTaskParams extends Omit<PluginEnvironmentDrive
 /** An accepted stop is not proof of process termination. */
 export function parseEnvironmentTaskResult(operation: PluginEnvironmentTaskOperation, taskId: string, value: unknown): PluginEnvironmentTaskResult {
   const result = environmentTaskResultSchema.parse(value);
+  if (operation.kind === "ensure_ownership") {
+    if (result.kind !== "ownership" || result.taskId !== taskId || result.operationId !== operation.operationId ||
+        result.targetGeneration !== operation.targetGeneration) {
+      throw new Error("Invalid plugin-provided session ownership response");
+    }
+    return result;
+  }
   const expected = operation.kind === "release" ? "released" : operation.kind === "resume" ? "resume" : operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "copilot_metadata"].includes(operation.kind) ? operation.kind : "accepted";
   if (result.taskId !== taskId || result.kind !== expected) throw new Error("Invalid plugin-provided Runner execution response");
   return result;
