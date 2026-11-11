@@ -18,7 +18,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
 import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
-import { assertPluginTaskOwnershipDispatch, replayPluginTaskOwnership } from "./plugin-task-ownership.js";
+import { assertPluginTaskOwnershipDispatch, reconcilePluginTaskOwnership, replayPluginTaskOwnership } from "./plugin-task-ownership.js";
 
 export function isSettledReadyRunnerState(state: Record<string, unknown>): boolean {
   const commands = state.processedCommands;
@@ -76,14 +76,22 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   if (input.expectedTaskId !== undefined && input.expectedTaskId !== taskId) throw new Error("Plugin Runner physical task changed");
   const metadata = lease.metadata ?? {};
   const ownership = operation.kind === "ensure_ownership";
-  if (operation.kind === "describe" && metadata.portableTaskPredecessor !== undefined &&
-      metadata.portableTaskOwnershipReady !== true && metadata.portableTaskSuccessor === undefined) {
-    await replayPluginTaskOwnership(db, lease, request => executeEnvironmentTask(db, workers, { ...input, operation: request }));
+  if (operation.kind === "describe" && metadata.portableTaskOwnershipReady !== true && metadata.portableTaskSuccessor === undefined &&
+      (metadata.portableTaskPredecessor !== undefined || typeof metadata.portableTaskPreviousLeaseId === "string")) {
+    const dispatch = (request: Extract<PluginEnvironmentTaskOperation, {kind: "ensure_ownership"}>) =>
+      executeEnvironmentTask(db, workers, { ...input, operation: request });
+    if (metadata.portableTaskPredecessor !== undefined) {
+      await replayPluginTaskOwnership(db, lease, dispatch);
+    } else if (typeof metadata.portableTaskPreviousLeaseId === "string") {
+      const result = await reconcilePluginTaskOwnership(db, { companyId: input.companyId,
+        sourceLeaseId: metadata.portableTaskPreviousLeaseId, targetLeaseId: lease.id, policy: "ordinary" }, dispatch);
+      if (result.status !== "ready") throw new Error("native_portable_task_ownership_pending");
+    }
     return executeEnvironmentTask(db, workers, input);
   }
   const requiresOwnership = !["ensure_ownership", "status", "stop", "complete"].includes(operation.kind);
   if (requiresOwnership && (metadata.portableTaskSuccessor !== undefined ||
-      metadata.portableTaskPredecessor !== undefined && metadata.portableTaskOwnershipReady !== true)) {
+      (metadata.portableTaskPredecessor !== undefined || metadata.portableTaskPreviousLeaseId !== undefined) && metadata.portableTaskOwnershipReady !== true)) {
     throw new Error("Plugin Runner session ownership unavailable");
   }
   if (ownership) {
@@ -424,7 +432,8 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       ...(executionContext ? { executionContext } : {}),
     };
     const timeout = operation.kind === "copilot_metadata" ? Math.max(1, Math.min(40_000, Number(probe?.expiresAtMs) - Date.now()))
-      : executionContext ? Math.max(1, context!.deadlineAtMs - Date.now()) : 15_000;
+      : executionContext ? Math.max(1, context!.deadlineAtMs - Date.now())
+      : driver.portableOwnershipVersion === 1 && (ownership || operation.kind === "describe") ? 90_000 : 15_000;
     const result = await callWorker("environmentTask", params, timeout);
     if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);

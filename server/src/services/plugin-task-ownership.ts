@@ -99,8 +99,13 @@ async function ownershipClaim(db: Db, input: {
         .where(eq(environmentLeases.id, sourceLeaseId));
       await tx.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ portableTaskPredecessor: claim })}::jsonb` })
         .where(eq(environmentLeases.id, targetLeaseId));
+    } else if (ready && target.metadata.portableTaskOwnershipReady === true &&
+        (target.metadata.portableTaskCheckpointUnavailable === true) !== (ready.checkpointUnavailable === true)) {
+      return unavailable();
     } else if (ready && target.metadata.portableTaskOwnershipReady !== true) {
-      await tx.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"portableTaskOwnershipReady":true}'::jsonb` })
+      await tx.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({
+        portableTaskOwnershipReady: true, ...(ready.checkpointUnavailable ? { portableTaskCheckpointUnavailable: true } : {}),
+      })}::jsonb` })
         .where(eq(environmentLeases.id, targetLeaseId));
     }
     return claim;
@@ -135,4 +140,25 @@ export async function replayPluginTaskOwnership(db: Db, lease: Lease,
     companyId: lease.companyId, sourceLeaseId: claim.sourceLeaseId, targetLeaseId: lease.id, policy: operation.data.policy,
   }, dispatch);
   if (result.status !== "ready") throw new Error("native_portable_task_ownership_pending");
+}
+
+export async function readyPortableTaskSource(db: Db, companyId: string, targetLeaseId: string, identity: unknown) {
+  const [target] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, companyId),
+    eq(environmentLeases.id, targetLeaseId)));
+  if (!target?.metadata?.portableTaskPredecessor) return undefined;
+  if (target.metadata.portableTaskCheckpointUnavailable === true) return undefined;
+  const claim = object(target.metadata.portableTaskPredecessor);
+  const operation = environmentTaskOperationSchema.safeParse(claim.operation);
+  if (target.status !== "active" || target.releasedAt || target.metadata.portableTaskOwnershipReady !== true ||
+      target.metadata.portableTaskSuccessor !== undefined || target.metadata.runnerTaskRetiring === true ||
+      target.expiresAt && target.expiresAt.getTime() <= Date.now() ||
+      !operation.success || operation.data.kind !== "ensure_ownership" ||
+      typeof claim.sourceLeaseId !== "string" ||
+      Object.entries(operation.data.identity).some(([key, value]) => object(identity)[key] !== value)) return unavailable();
+  assertPluginTaskOwnershipDispatch(target, operation.data);
+  const [source] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, companyId),
+    eq(environmentLeases.id, claim.sourceLeaseId)));
+  if (!source || source.providerLeaseId !== operation.data.sourceTaskId ||
+      nativeSha256(source.metadata?.portableTaskSuccessor ?? null) !== nativeSha256(claim)) return unavailable();
+  return operation.data.sourceTaskId;
 }

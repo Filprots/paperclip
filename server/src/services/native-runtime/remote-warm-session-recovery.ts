@@ -4,6 +4,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { currentNativeControllerIdentity, evaluateNativeControllerTakeover, recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
 import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
+import { readyPortableTaskSource } from "../plugin-task-ownership.js";
 
 export type RemoteWarmSessionRecovery = {
   identity: Record<string, string>;
@@ -11,6 +12,7 @@ export type RemoteWarmSessionRecovery = {
   previousExecution: NativeExecutionInput;
   reuseProcess: boolean;
   releasedSource?: DurableRecoveryIdentity;
+  portableSourceTaskId?: string;
   remote: { providerLeaseId: string; remoteCwd: string };
   revalidate: (leaseOwner: string) => Promise<void>;
 };
@@ -123,6 +125,7 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   matchesExecution: (previous: NativeExecutionInput) => boolean;
   loadCheckpoint: (previous: NativeExecutionInput) => PersistedNativeSession | null;
   canReuseProcess: (previous: NativeExecutionInput) => boolean;
+  portableSourceTaskId?: string;
 }): Promise<RemoteWarmSessionRecovery | null> {
   const deny = (): never => { throw new Error("runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate"); };
   const { binding } = input.execution;
@@ -137,11 +140,11 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   // sandbox (for example after a restart or deploy replaced the controller)
   // holds no Runner to adopt, so live adoption steps aside. Ordinary admission
   // then retires the finished owner or keeps it held with a named reason.
-  if (target.transport === "sandbox" && ["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
+  if (!input.portableSourceTaskId && target.transport === "sandbox" && ["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
     return null;
   }
   if (target.transport !== "sandbox" || !target.leaseId || !target.environmentId ||
-      !target.providerKey || !target.sandboxLeaseAcquisition || target.sandboxLeaseAcquisition.outcome !== "resumed" ||
+      !target.providerKey || !target.sandboxLeaseAcquisition || !input.portableSourceTaskId && target.sandboxLeaseAcquisition.outcome !== "resumed" ||
       identity.runId === binding.runId) return deny();
   const providerLeaseId = target.sandboxLeaseAcquisition.providerLeaseId;
   const [prior] = await input.db.select({ run: heartbeatRuns, owner: nativeRunFinalizations })
@@ -178,15 +181,17 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   const priorLeases = await input.db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, binding.companyId), eq(environmentLeases.heartbeatRunId, identity.runId),
     eq(environmentLeases.issueId, binding.issueId), eq(environmentLeases.environmentId, target.environmentId),
-    eq(environmentLeases.provider, target.providerKey), eq(environmentLeases.providerLeaseId, providerLeaseId),
+    eq(environmentLeases.provider, target.providerKey), eq(environmentLeases.providerLeaseId, input.portableSourceTaskId ?? providerLeaseId),
   ));
   if (priorLeases.length !== 1 || priorLeases[0].metadata?.remoteCwd !== target.remoteCwd ||
-      !["released", "expired", "active"].includes(priorLeases[0].status)) return deny();
+      !["released", "expired", "active", ...(input.portableSourceTaskId ? ["retained"] : [])].includes(priorLeases[0].status)) return deny();
   return {
     identity, checkpoint, previousExecution: previous, reuseProcess: input.canReuseProcess(previous),
+    portableSourceTaskId: input.portableSourceTaskId,
     remote: { providerLeaseId, remoteCwd: target.remoteCwd },
     revalidate: async leaseOwner => {
       await assertPriorStopped();
+      if (input.portableSourceTaskId && await readyPortableTaskSource(input.db, binding.companyId, target.leaseId!, identity) !== input.portableSourceTaskId) return deny();
       const controller = await currentNativeControllerIdentity();
       const [current] = await input.db.select({ run: heartbeatRuns, owner: nativeRunFinalizations, issue: issues, agent: agents, company: companies })
         .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))

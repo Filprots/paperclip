@@ -138,8 +138,13 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     const request = { companyId: f.companyId, sourceLeaseId: f.sourceLeaseId, targetLeaseId: f.leaseId, policy };
     const send = (database: typeof db) => reconcilePluginTaskOwnership(database, request, operation =>
       executeEnvironmentTask(database, f.workers as unknown as PluginWorkerManager, { companyId: f.companyId, leaseId: f.leaseId, operation }));
+    const describe = (database: typeof db) => executeEnvironmentTask(database, f.workers as unknown as PluginWorkerManager,
+      { companyId: f.companyId, leaseId: f.leaseId, operation: { kind: "describe" } });
+    if (policy === "ordinary") await db.update(environmentLeases).set({
+      metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ portableTaskPreviousLeaseId: f.sourceLeaseId })}::jsonb`,
+    }).where(eq(environmentLeases.id, f.leaseId));
     f.workers.call.mockRejectedValueOnce(new Error("worker transport lost"));
-    await expect(send(db)).rejects.toThrow();
+    await expect(policy === "ordinary" ? describe(db) : send(db)).rejects.toThrow();
     const operation = f.workers.call.mock.calls[0][2].operation;
     expect(operation).toMatchObject({ kind: "ensure_ownership", operationId: f.leaseId, identity: f.identity,
       sourceTaskId: "source-task", sourceGeneration: "source-generation", targetGeneration: "target-generation", policy });
@@ -151,8 +156,6 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     expect(f.workers.call).toHaveBeenCalledTimes(1);
     const reply = { kind: "ownership", taskId: "replacement-task", operationId: f.leaseId,
       targetGeneration: "target-generation" } as const;
-    const describe = (database: typeof db) => executeEnvironmentTask(database, f.workers as unknown as PluginWorkerManager,
-      { companyId: f.companyId, leaseId: f.leaseId, operation: { kind: "describe" } });
     f.workers.call.mockResolvedValueOnce({ ...reply, status: "pending" });
     await expect(describe(db)).rejects.toThrow("native_portable_task_ownership_pending");
     const targetWriter = nativeRunnerCheckpointWriter(db, { companyId: f.companyId, issueId: f.issueId,

@@ -46,8 +46,13 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
       const secrets = agentInstanceSecretService(db);
       const instanceSecrets = ["preparing", "resuming"].includes(agent.lifecycleState)
         ? await secrets.read({ companyId: agent.companyId, agentId: agent.id, pluginId }) : {};
+      const [placement] = await db.select({ environmentId: agents.defaultEnvironmentId }).from(agents).where(eq(agents.id, agent.id));
+      const environmentId = placement?.environmentId ?? (await instanceSettingsService(db).get()).defaultEnvironmentId;
+      const [environment] = environmentId ? await db.select().from(environments).where(eq(environments.id, environmentId)) : [];
+      const environmentDriverKey = pluginServesAgentEnvironment(plugin, environment) && typeof environment?.config?.driverKey === "string"
+        ? environment.config.driverKey : undefined;
       const request = { companyId: agent.companyId, agentId: agent.id, operationId, version: agent.lifecycleVersion, phase: agent.lifecycleState,
-        instanceSecrets };
+        ...(environmentDriverKey ? { environmentDriverKey } : {}), instanceSecrets };
       const result = await manager.call(plugin.id, "agentLifecycle", request, 30_000);
       if (!result || result.operationId !== operationId || result.version !== agent.lifecycleVersion || !["complete", "pending"].includes(result.status)) {
         throw Object.assign(new Error("Invalid lifecycle result"), { code: "invalid_lifecycle_result" });

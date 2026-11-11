@@ -33,6 +33,7 @@ import { agentHarnessType, CHAT_PROVIDERS } from "@paperclipai/shared";
 import {
   type agents,
   completionContracts,
+  environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
   nativeRunFinalizations,
@@ -451,7 +452,19 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             immediateRequests: immediateCompletion.requests,
             immediateRequestSources: immediateCompletion.sources,
           }));
-    const taskNativeSessionId = !taskSessionCredentialCompatible ? null : readNonEmptyString(
+    let reseedPortableSession = false;
+    const portableLease = activeEnvironmentLease?.lease;
+    if (portableLease?.metadata?.portableTaskPreviousLeaseId && executionTarget?.kind === "remote" &&
+        executionTarget.transport === "sandbox" && executionTarget.runnerTask && executionTarget.leaseId === portableLease.id) {
+      await executionTarget.runnerTask({ kind: "describe" });
+      const [current] = await db.select({ metadata: environmentLeases.metadata }).from(environmentLeases)
+        .where(and(eq(environmentLeases.id, portableLease.id), eq(environmentLeases.companyId, agent.companyId),
+          eq(environmentLeases.heartbeatRunId, run.id)));
+      reseedPortableSession = current?.metadata?.portableTaskOwnershipReady === true &&
+        current.metadata.portableTaskCheckpointUnavailable === true;
+      if (reseedPortableSession && run.nativeSessionId) throw new Error("native_portable_reseed_session_already_attached");
+    }
+    const taskNativeSessionId = reseedPortableSession || !taskSessionCredentialCompatible ? null : readNonEmptyString(
       taskSessionDecodedParams?.sessionId,
     );
     // Compatibility for native retry rows created before same-run restart
@@ -522,7 +535,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       isNativeSessionId(taskNativeSessionId)
         ? taskSessionForRun.lastRunId
         : null;
-    const resumableTaskSessionId = isDotRun ? null : taskResumeRunId
+    const resumableTaskSessionId = reseedPortableSession || isDotRun ? null : taskResumeRunId
       ? taskNativeSessionId
       : (legacyRetrySessionId ?? null);
     const requestedNativeSessionId =

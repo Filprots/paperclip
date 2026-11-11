@@ -138,6 +138,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     operationId: z.string().uuid(),
     targetGeneration: providerId.max(1024),
     status: z.enum(["pending", "ready"]),
+    checkpointUnavailable: z.literal(true).optional(),
   }).strict(),
   z.object({ kind: z.literal("copilot_metadata"), taskId: providerId, metadata: z.record(z.string(), z.unknown()),
     executionStopped: z.literal(true) }).strict(),
