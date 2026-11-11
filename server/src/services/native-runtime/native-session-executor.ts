@@ -10403,7 +10403,7 @@ async function executePaperclipNativeSessionAttempt(
     if (targetLease?.metadata?.portableTaskPreviousLeaseId || targetLease?.metadata?.portableTaskPredecessor) {
       await portableTarget.runnerTask({ kind: "describe" });
       portableSourceTaskId = await readyPortableTaskSource(input.db, companyId, portableTarget.leaseId,
-        readRunnerdDurableIdentity(scopedRunnerdStateRoot(input.execution)));
+        readRunnerdDurableIdentity(scopedRunnerdStateRoot(input.execution)), input.execution.binding.runId);
     }
   }
   const cachedReleasedOwner = warmNativeSessions.get(nativeSessionScopeKey(input.execution));

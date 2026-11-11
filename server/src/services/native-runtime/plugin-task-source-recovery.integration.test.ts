@@ -12,7 +12,7 @@ import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { executeEnvironmentTask, resolvePluginTaskResume } from "../environment-task-runtime.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
-import { reconcilePluginTaskOwnership } from "../plugin-task-ownership.js";
+import { readyPortableTaskSource, reconcilePluginTaskOwnership } from "../plugin-task-ownership.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
@@ -178,6 +178,12 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     await expect(f.oldWriter(f.checkpoint)).rejects.toThrow("native_runner_checkpoint_owner_lost");
     await expect(targetWriter(f.checkpoint)).resolves.toBeUndefined();
 
+    const resume = { kind: "resume", identity: f.identity, bootstrapTicket: "fixture-ticket" } as const;
+    f.workers.call.mockResolvedValueOnce({ kind: "resume", taskId: "replacement-task", outcome: "resumed" });
+    await expect(f.task(resume)).resolves.toMatchObject({ kind: "resume", outcome: "resumed" });
+    const [dispatched] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    expect(dispatched.metadata?.runnerTaskDispatched).toBe(true);
+
     const readState = { kind: "read_state", identity: f.identity } as const;
     await expect(f.task({ ...readState, identity: { ...f.identity, itemId: "wrong-item" } }))
       .rejects.toThrow("ownership_unverified");
@@ -193,6 +199,10 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     const [attached] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
     expect(attached.metadata?.runnerTaskIdentity).toMatchObject({ runId: f.runId, sessionId: f.identity.normalizedSessionId });
     expect(attached.metadata?.runnerTaskPriorIdentity).toMatchObject({ runId: f.sourceRunId, itemId: f.identity.itemId });
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, nextIdentity, f.runId)).resolves.toBeUndefined();
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, { ...nextIdentity, turnId: "wrong-turn" }, f.runId))
+      .rejects.toThrow("ownership_unverified");
+    await expect(readyPortableTaskSource(db, f.companyId, f.leaseId, f.identity, f.runId)).resolves.toBe("source-task");
   });
 
   it.each(["codex", "claude"] as const)("authorizes the claimed %s source while preserving A's accepted outcome", async provider => {

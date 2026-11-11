@@ -127,6 +127,12 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   const savedIdentity = metadata.runnerTaskIdentity as Record<string, unknown> | undefined;
   const prior = operation.kind === "prepare" ? operation.priorIdentity : undefined;
   const priorSaved = metadata.runnerTaskPriorIdentity as Record<string, unknown> | undefined;
+  const firstPortableResume = operation.kind === "resume" && !savedIdentity &&
+    metadata.portableTaskPredecessor !== undefined;
+  if (firstPortableResume && (run?.status !== "running" ||
+      !await readyPortableTaskSource(db, input.companyId, lease.id, operation.identity))) {
+    throw new Error("Plugin Runner session ownership unavailable");
+  }
   const matches = (identity: typeof prior, saved: Record<string, unknown> | undefined) => !!identity && !!saved &&
     identity.runnerInstanceId === saved.runnerId && identity.environmentLeaseId === saved.leaseId &&
     identity.normalizedSessionId === saved.sessionId && identity.runId === saved.runId &&
@@ -163,6 +169,12 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     runner?.runnerId === prior.runnerInstanceId &&
     runner?.leaseId === prior.environmentLeaseId && runner?.sessionId === prior.normalizedSessionId;
   if (prior && !warmAttachment) throw new Error("Plugin warm task prior identity mismatch");
+  const portableAuthority = firstPortableResume || portableAttachment
+    ? sql`${environmentLeases.metadata}->'portableTaskSuccessor' is null
+        and ${environmentLeases.metadata}->'portableTaskOwnershipReady' = 'true'::jsonb
+        and coalesce(${environmentLeases.metadata}->>'portableTaskCheckpointUnavailable', 'false') != 'true'
+        and ${environmentLeases.metadata}->'portableTaskPredecessor' = ${JSON.stringify(metadata.portableTaskPredecessor)}::jsonb`
+    : undefined;
   if (runner && !sourceRecovery && ((!checkpointIdentity || !resumeFrom) && !(ownCheckpoint && operation.kind !== "read_file") && runner.runId !== (activeProbe ? probe.runId : run?.id) || (!resumeFrom && runner.leaseId !== lease.id && !ownCheckpoint && !warmAttachment)
     || (activeProbe && (runner.sessionId !== probe.sessionId || (launches && operation.projectIds.length > 0))))) {
     throw new Error("Plugin-provided Runner execution identity mismatch");
@@ -296,13 +308,14 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     operation.launch.maxRuntimeMs = Math.min(remainingMs, ...requestedLimits);
     delete operation.launch.maxLifetimeMs;
   }
-  if (operation.kind === "submit" || operation.kind === "copilot_metadata") {
+  if (operation.kind === "submit" || operation.kind === "copilot_metadata" || firstPortableResume) {
     // No ticket, headers, environment values, or launch paths belong in metadata.
     const marked = await db.update(environmentLeases).set({
       metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskAdmissionRejection') || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, ...(operation.kind === "submit" ? { runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null } : {}) })}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
       eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
       requiredProjectAuthProof ? sql`${environmentLeases.metadata}->'runnerTaskProjectAuthValidation' = ${JSON.stringify(requiredProjectAuthProof)}::jsonb` : undefined,
+      firstPortableResume ? portableAuthority : undefined,
     )).returning({ id: environmentLeases.id });
     if (marked.length !== 1) throw new Error("Plugin-provided Runner execution lease is not active");
   }
@@ -317,9 +330,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       ...(startup ? { runnerTaskStartup: startup } : {}),
     })}::jsonb` }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "active"),
       sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
-      portableAttachment ? sql`${environmentLeases.metadata}->'portableTaskSuccessor' is null
-        and ${environmentLeases.metadata}->'portableTaskOwnershipReady' = 'true'::jsonb
-        and ${environmentLeases.metadata}->'portableTaskPredecessor' = ${JSON.stringify(metadata.portableTaskPredecessor)}::jsonb` : undefined,
+      portableAttachment ? portableAuthority : undefined,
       savedIdentity ? sql`${environmentLeases.metadata}->'runnerTaskIdentity' = ${JSON.stringify(savedIdentity)}::jsonb`
         : sql`${environmentLeases.metadata}->'runnerTaskIdentity' is null`)).returning({id:environmentLeases.id});
     if (marked.length !== 1) throw new Error("Plugin warm task attachment lost authority");

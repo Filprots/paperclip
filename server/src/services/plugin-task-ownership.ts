@@ -142,7 +142,8 @@ export async function replayPluginTaskOwnership(db: Db, lease: Lease,
   if (result.status !== "ready") throw new Error("native_portable_task_ownership_pending");
 }
 
-export async function readyPortableTaskSource(db: Db, companyId: string, targetLeaseId: string, identity: unknown) {
+export async function readyPortableTaskSource(db: Db, companyId: string, targetLeaseId: string, identity: unknown,
+  attachedRunId?: string) {
   const [target] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, companyId),
     eq(environmentLeases.id, targetLeaseId)));
   if (!target?.metadata?.portableTaskPredecessor) return undefined;
@@ -153,13 +154,24 @@ export async function readyPortableTaskSource(db: Db, companyId: string, targetL
       target.metadata.portableTaskSuccessor !== undefined || target.metadata.runnerTaskRetiring === true ||
       target.expiresAt && target.expiresAt.getTime() <= Date.now() ||
       !operation.success || operation.data.kind !== "ensure_ownership" ||
-      typeof claim.sourceLeaseId !== "string" ||
-      Object.entries(operation.data.identity).some(([key, value]) => object(identity)[key] !== value)) return unavailable();
+      typeof claim.sourceLeaseId !== "string") return unavailable();
   assertPluginTaskOwnershipDispatch(target, operation.data);
   const [source] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, companyId),
     eq(environmentLeases.id, claim.sourceLeaseId)));
   if (!source || source.provider !== target.provider || source.providerLeaseId !== operation.data.sourceTaskId ||
       leaseGeneration(source) !== operation.data.sourceGeneration ||
       nativeSha256(source.metadata?.portableTaskSuccessor ?? null) !== nativeSha256(claim)) return unavailable();
+  const candidate = object(identity);
+  if (attachedRunId && target.heartbeatRunId === attachedRunId && candidate.runId === attachedRunId) {
+    const saved = object(target.metadata.runnerTaskIdentity);
+    const attachedIdentity = {
+      runnerInstanceId: saved.runnerId, environmentLeaseId: saved.leaseId,
+      runId: saved.runId, normalizedSessionId: saved.sessionId, turnId: saved.turnId, itemId: saved.itemId,
+    };
+    if (Object.entries(attachedIdentity).every(([key, value]) =>
+      typeof value === "string" && value.length > 0 && candidate[key] === value)) return undefined;
+    return unavailable();
+  }
+  if (Object.entries(operation.data.identity).some(([key, value]) => candidate[key] !== value)) return unavailable();
   return operation.data.sourceTaskId;
 }
