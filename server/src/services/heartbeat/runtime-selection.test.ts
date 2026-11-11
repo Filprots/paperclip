@@ -97,6 +97,53 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
 
+  it("selects an independent native session when disk-only recovery cannot claim the checkpoint", async () => {
+    const { input, run, issue } = await fixture();
+    const priorSession = randomUUID();
+    const lease = input.workspace.activeEnvironmentLease!.lease;
+    const pending = { ...lease, metadata: { portableTaskPreviousLeaseId: randomUUID(),
+      portableTaskPredecessor: { operation: { identity: { normalizedSessionId: priorSession } } },
+    } };
+    await db.insert(environmentLeases).values(pending);
+    input.workspace.activeEnvironmentLease!.lease = pending;
+    const taskRpc = vi.fn(async ({ kind }: { kind: string }) => {
+      expect(kind).toBe("describe");
+      await db.update(environmentLeases).set({
+        metadata: { ...pending.metadata, portableTaskOwnershipReady: true, portableTaskCheckpointUnavailable: true },
+      }).where(eq(environmentLeases.id, lease.id));
+      return { kind: "description", taskId: lease.id };
+    });
+    input.workspace.executionTarget = { ...sandbox, leaseId: lease.id, runnerTask: taskRpc,
+      reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: true },
+      runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } } as never;
+    input.session.taskSessionDecodedParams = { sessionId: priorSession };
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Cloud is unavailable"));
+    try {
+      const selected = await selectHeartbeatRuntime(db, input);
+      expect(selected.selected).toBe(true);
+      if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+      const saved = await read(run.id);
+      expect(saved.nativeSessionId).toBeTruthy();
+      expect(saved.nativeSessionId).not.toBe(priorSession);
+      expect(await selected.getNativeFreshSessionHandoff?.()).toBe("Earlier context");
+      expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]).toEqual(issue);
+      expect(taskRpc).toHaveBeenCalledOnce();
+      expect(network).not.toHaveBeenCalled();
+
+      // A lost reply after committing selection must allow the same replacement run to retry.
+      input.run = saved;
+      input.session.persistedRunnerProfile = saved.runnerProfileJson ?? {};
+      input.session.persistedNativeExecutionInput = selected.nativeExecution;
+      await expect(selectHeartbeatRuntime(db, input)).resolves.toMatchObject({
+        selected: true, nativeExecution: selected.nativeExecution,
+      });
+      input.run = { ...saved, nativeSessionId: priorSession };
+      await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("native_portable_reseed_session_already_attached");
+    } finally {
+      network.mockRestore();
+    }
+  });
+
   it("rejects invalid local Runner configuration before native authority and retains the preparation owner", async () => {
     const f = await fixture();
     await claimPreparation(f);

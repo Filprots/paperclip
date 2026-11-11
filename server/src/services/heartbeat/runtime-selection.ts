@@ -462,7 +462,15 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           eq(environmentLeases.heartbeatRunId, run.id)));
       reseedPortableSession = current?.metadata?.portableTaskOwnershipReady === true &&
         current.metadata.portableTaskCheckpointUnavailable === true;
-      if (reseedPortableSession && run.nativeSessionId) throw new Error("native_portable_reseed_session_already_attached");
+      if (reseedPortableSession && run.nativeSessionId) {
+        const predecessor = parseObject(current?.metadata?.portableTaskPredecessor);
+        const previousIdentity = parseObject(parseObject(predecessor.operation).identity);
+        const previousSessionId = readNonEmptyString(previousIdentity.normalizedSessionId);
+        if (!previousSessionId || run.nativeSessionId === previousSessionId ||
+            persistedNativeExecutionInput?.session.normalizedSessionId !== run.nativeSessionId) {
+          throw new Error("native_portable_reseed_session_already_attached");
+        }
+      }
     }
     const taskNativeSessionId = reseedPortableSession || !taskSessionCredentialCompatible ? null : readNonEmptyString(
       taskSessionDecodedParams?.sessionId,
