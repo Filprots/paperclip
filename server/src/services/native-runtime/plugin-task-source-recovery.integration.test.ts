@@ -12,7 +12,7 @@ import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { executeEnvironmentTask, resolvePluginTaskResume } from "../environment-task-runtime.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
-import { readyPortableTaskSource, reconcilePluginTaskOwnership, waitForPluginTaskOwnership } from "../plugin-task-ownership.js";
+import { readyPortableTaskSource, reconcilePluginTaskOwnership } from "../plugin-task-ownership.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
@@ -138,8 +138,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     const request = { companyId: f.companyId, sourceLeaseId: f.sourceLeaseId, targetLeaseId: f.leaseId, policy };
     const send = (database: typeof db) => reconcilePluginTaskOwnership(database, request, operation =>
       executeEnvironmentTask(database, f.workers as unknown as PluginWorkerManager, { companyId: f.companyId, leaseId: f.leaseId, operation }));
-    const describe = (database: typeof db) => executeEnvironmentTask(database, f.workers as unknown as PluginWorkerManager,
-      { companyId: f.companyId, leaseId: f.leaseId, operation: { kind: "describe" } });
+    const describe = (database: typeof db, ownershipSignal?: AbortSignal) => executeEnvironmentTask(database, f.workers as unknown as PluginWorkerManager,
+      { companyId: f.companyId, leaseId: f.leaseId, ownershipSignal, operation: { kind: "describe" } });
     if (policy === "ordinary") await db.update(environmentLeases).set({
       metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ portableTaskPreviousLeaseId: f.sourceLeaseId })}::jsonb`,
     }).where(eq(environmentLeases.id, f.leaseId));
@@ -171,7 +171,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     f.workers.call.mockResolvedValueOnce({ ...reply, status: "pending" });
     f.workers.call.mockResolvedValueOnce({ ...reply, status: "ready" });
     f.workers.call.mockResolvedValueOnce(description);
-    await expect(waitForPluginTaskOwnership(() => describe(restarted))).resolves.toEqual(description);
+    await expect(describe(restarted, new AbortController().signal)).resolves.toEqual(description);
     expect(f.workers.call.mock.calls.map(([, , call]) => call.operation)).toEqual([...Array(6).fill(operation), { kind: "describe" }]);
     const [target] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
     expect(target.metadata?.portableTaskOwnershipReady).toBe(true);

@@ -23,23 +23,6 @@ export class PluginTaskOwnershipPendingError extends Error {
   }
 }
 
-/** Keep pre-dispatch admission on the same run and lease while the claim is unresolved. */
-export async function waitForPluginTaskOwnership<T>(describe: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-  let backoffMs = 250;
-  for (;;) {
-    signal?.throwIfAborted();
-    try {
-      const result = await describe();
-      signal?.throwIfAborted();
-      return result;
-    } catch (error) {
-      if (!(error instanceof PluginTaskOwnershipPendingError)) throw error;
-    }
-    await delay(backoffMs, undefined, { signal });
-    backoffMs = Math.min(backoffMs * 2, 5_000);
-  }
-}
-
 function unavailable(): never {
   throw new Error("native_portable_task_ownership_unverified");
 }
@@ -158,17 +141,37 @@ export function assertPluginTaskOwnershipDispatch(lease: Lease, operation: Owner
       nativeSha256(claim.operation) !== nativeSha256(operation)) return unavailable();
 }
 
-export async function replayPluginTaskOwnership(db: Db, lease: Lease,
-  dispatch: (operation: OwnershipOperation) => Promise<PluginEnvironmentTaskResult>): Promise<void> {
-  const claim = object(lease.metadata?.portableTaskPredecessor);
-  const operation = environmentTaskOperationSchema.safeParse(claim.operation);
-  if (typeof claim.sourceLeaseId !== "string" || claim.targetLeaseId !== lease.id ||
-      !operation.success || operation.data.kind !== "ensure_ownership") return unavailable();
-  assertPluginTaskOwnershipDispatch(lease, operation.data);
-  const result = await reconcilePluginTaskOwnership(db, {
-    companyId: lease.companyId, sourceLeaseId: claim.sourceLeaseId, targetLeaseId: lease.id, policy: operation.data.policy,
-  }, dispatch);
-  if (result.status !== "ready") throw new PluginTaskOwnershipPendingError();
+/** Reconcile the declared predecessor before admitting the task on this lease. */
+export async function reconcilePluginTaskAdmission(db: Db, lease: Lease,
+  dispatch: (operation: OwnershipOperation) => Promise<PluginEnvironmentTaskResult>, signal?: AbortSignal): Promise<void> {
+  let sourceLeaseId = lease.metadata?.portableTaskPreviousLeaseId;
+  let policy: OwnershipOperation["policy"] = "ordinary";
+  if (lease.metadata?.portableTaskPredecessor !== undefined) {
+    const claim = object(lease.metadata.portableTaskPredecessor);
+    const operation = environmentTaskOperationSchema.safeParse(claim.operation);
+    if (!operation.success || operation.data.kind !== "ensure_ownership") return unavailable();
+    assertPluginTaskOwnershipDispatch(lease, operation.data);
+    sourceLeaseId = claim.sourceLeaseId;
+    policy = operation.data.policy;
+  }
+  if (typeof sourceLeaseId !== "string") return unavailable();
+  const request = { companyId: lease.companyId, sourceLeaseId, targetLeaseId: lease.id, policy };
+  let backoffMs = 250;
+  for (;;) {
+    signal?.throwIfAborted();
+    try {
+      const result = await reconcilePluginTaskOwnership(db, request, dispatch);
+      if (result.status === "ready") {
+        signal?.throwIfAborted();
+        return;
+      }
+    } catch (error) {
+      if (!(error instanceof PluginTaskOwnershipPendingError)) throw error;
+    }
+    if (!signal) throw new PluginTaskOwnershipPendingError();
+    await delay(backoffMs, undefined, { signal });
+    backoffMs = Math.min(backoffMs * 2, 5_000);
+  }
 }
 
 export async function readyPortableTaskSource(db: Db, companyId: string, targetLeaseId: string, identity: unknown,

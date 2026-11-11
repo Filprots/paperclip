@@ -1,3 +1,4 @@
+import { isNativeSessionId } from "../native-runtime/index.js";
 import { and, desc, eq } from "drizzle-orm";
 import { agentConfigRevisions, type Db, type agents, type agentTaskSessions, type heartbeatRuns, type issues, type projects } from "@paperclipai/db";
 import type { AiConnectionBinding, AiRuntimeConnectionBinding } from "@paperclipai/shared";
@@ -29,7 +30,7 @@ type TaskSession = typeof agentTaskSessions.$inferSelect | null;
 type SessionCodec = ReturnType<typeof getAdapterSessionCodec>;
 
 export interface HeartbeatSessionPreparationInput {
-  run: Pick<typeof heartbeatRuns.$inferSelect, "createdAt">;
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "createdAt">;
   agent: typeof agents.$inferSelect;
   task: {
     context: Record<string, unknown>;
@@ -209,6 +210,9 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
     managedAiRuntime.sessionIdentity,
     managedAiRuntime.identity,
   );
+  const taskSessionId = readNonEmptyString(taskSessionDecodedParams?.sessionId);
+  const taskResumeSessionId = taskSessionCredentialCompatible && taskSessionForRun?.lastRunId &&
+    taskSessionForRun.lastRunId !== run.id && isNativeSessionId(taskSessionId) ? taskSessionId : null;
   const getFreshSessionHandoff = issueRef ? createNativeSessionHandoffLoader({
     db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id, before: run.createdAt,
     throughCommentId: readNonEmptyString(context.conversationReplayThroughCommentId) ?? (context.interactionKind ? null : wakeCommentId),
@@ -236,7 +240,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
     if (handoff) context.paperclipFreshSessionHandoffMarkdown = handoff;
   }
   return { sessionConfigMetadata, configuredModel, sessionConfigFreshness, resetTaskSession, sessionResetReason, taskSessionForRun,
-    taskSessionCredentialCompatible, getFreshSessionHandoff, previousSessionParams };
+    taskSessionCredentialCompatible, taskResumeSessionId, getFreshSessionHandoff, previousSessionParams };
 }
 
 export interface HeartbeatAdapterSessionInput {
@@ -397,5 +401,5 @@ export async function resolveHeartbeatAdapterSession(input: HeartbeatAdapterSess
     },
   };
 
-  return { previousSessionDisplayId, runtimeSessionParamsForAdapter, taskSessionCredentialCompatible, runtimeForAdapter, configFreshnessResultMetadata, sessionCompaction };
+  return { previousSessionDisplayId, runtimeSessionParamsForAdapter, runtimeForAdapter, configFreshnessResultMetadata, sessionCompaction };
 }

@@ -2870,7 +2870,7 @@ export function heartbeatService(
         executionTarget,
         workspaceRestoreSource,
       } = await timePreparation("workspace", () => prepareHeartbeatWorkspace(db, {
-        run, agent, controllerLease, nativeRunnerPreparationSpans,
+        run, agent, controllerLease, nativeRunnerPreparationSpans, signal: executionControl.controller.signal,
         task: {
           issueRef,
           issueId,
@@ -2905,9 +2905,7 @@ export function heartbeatService(
           configSnapshot,
           secretManifest,
           managedAiCredentialIdentity: managedAiRuntime?.identity,
-          runnerTaskResumeSessionId: run.nativeSessionId ?? (preparedSession.taskSessionCredentialCompatible &&
-            preparedSession.taskSessionForRun?.lastRunId && preparedSession.taskSessionForRun.lastRunId !== run.id
-            ? readNonEmptyString(taskSessionDecodedParams?.sessionId) : null),
+          runnerTaskResumeSessionId: run.nativeSessionId ?? preparedSession.taskResumeSessionId,
         },
         reuse: {
           requestedShouldReuseExisting,
@@ -2937,7 +2935,7 @@ export function heartbeatService(
         appendRunEvent,
       });
       if (managedAiRuntime && aiBinding) {
-        try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget, executionControl.controller.signal); }
+        try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
         catch (error) { throw classifyManagedProjectAuthFailure(error, agent.id); }
       }
       const remoteExecution = realizationResult.remoteExecution;
@@ -3268,7 +3266,7 @@ export function heartbeatService(
         context.projectId = executionWorkspace.projectId;
       }
       const {
-        previousSessionDisplayId, runtimeSessionParamsForAdapter, taskSessionCredentialCompatible, runtimeForAdapter, configFreshnessResultMetadata, sessionCompaction,
+        previousSessionDisplayId, runtimeSessionParamsForAdapter, runtimeForAdapter, configFreshnessResultMetadata, sessionCompaction,
       } = await resolveHeartbeatAdapterSession({
         agent,
         task: { context, taskKey, issueId, continuationSummary, executionContinuation },
@@ -3480,9 +3478,7 @@ export function heartbeatService(
           session: {
             persistedNativeExecutionInput,
             persistedRunnerProfile,
-            taskSessionCredentialCompatible,
-            taskSessionDecodedParams,
-            taskSessionForRun,
+            taskResumeSessionId: preparedSession.taskResumeSessionId,
             isFailedChatRunRetry,
             getFreshSessionHandoff,
           },
@@ -3519,7 +3515,6 @@ export function heartbeatService(
           trace: { providerTraceRequested, providerTraceCapture },
           issuesSvc,
           runtimeEnv,
-          signal: executionControl.controller.signal,
           beforeNativeRuntimeSelection: options.beforeNativeRuntimeSelection,
           onAdapterEvent,
           onNativeLifecycleSelected: (telemetry) => {

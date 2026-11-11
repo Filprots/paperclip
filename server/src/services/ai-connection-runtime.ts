@@ -1,4 +1,3 @@
-import { waitForPluginTaskOwnership } from "./plugin-task-ownership.js";
 import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import type { ManagedAiCredentialWritebackBinding } from "./managed-ai-credential-writeback.js";
 import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
@@ -104,7 +103,6 @@ export async function assertManagedAiProjectAuth(
   config: Record<string, unknown>,
   provider: AiConnectionBinding["provider"],
   target?: AdapterExecutionTarget | null,
-  signal?: AbortSignal,
 ) {
   const extraArgs = [
     ...(Array.isArray(config.extraArgs) ? config.extraArgs : []),
@@ -133,8 +131,7 @@ export async function assertManagedAiProjectAuth(
   const pattern =
     "apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider[[:space:]]*=|env_key[[:space:]]*=|experimental_bearer_token|cli_auth_credentials_store";
   if (target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && files.length) {
-    const describe = target.runnerTask;
-    const description = environmentTaskResultSchema.parse(await waitForPluginTaskOwnership(() => describe({ kind: "describe" }), signal));
+    const description = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "describe" }));
     if (description.kind !== "description" || description.projectAuthCheckVersion !== 1) {
       throw unprocessable("The plugin environment cannot validate managed project authentication", { code: "ai_connection_incompatible" });
     }

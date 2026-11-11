@@ -1,4 +1,3 @@
-import { PluginTaskOwnershipPendingError } from "../plugin-task-ownership.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
@@ -83,7 +82,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       run, agent,
       nativeRuntimeResolution: resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {}, adapterConfig: agent.adapterConfig, agent, issue, target: null, workspaceId: null }),
       task: { issueRef: issue, issueContext: null, context: { paperclipTaskMarkdown: "Complete this task" }, executionContinuation: null, safeWakeComments: [], safeWakeCommentContext: null, paperclipWakePayload: null, acceptedPlanContinuationWake: false },
-      session: { persistedNativeExecutionInput: null, persistedRunnerProfile: {}, taskSessionCredentialCompatible: true, taskSessionDecodedParams: null, taskSessionForRun: null, isFailedChatRunRetry: false, getFreshSessionHandoff: vi.fn(async () => "Earlier context") },
+      session: { persistedNativeExecutionInput: null, persistedRunnerProfile: {}, taskResumeSessionId: null, isFailedChatRunRetry: false, getFreshSessionHandoff: vi.fn(async () => "Earlier context") },
       workspace: { persistedExecutionWorkspace: null, executionWorkspace: { cwd: "/tmp/paperclip-runtime-selection", repoUrl: null, repoRef: null, branchName: null }, executionTarget: null, isDotRun: false, projectRepositoryPaths: [],
         activeEnvironmentLease: { lease: { id: randomUUID(), companyId: company.id, environmentId: null, executionWorkspaceId: null, issueId: issue.id, heartbeatRunId: run.id, status: "active", leasePolicy: "ephemeral", provider: null, providerLeaseId: null, acquiredAt: now, lastUsedAt: now, expiresAt: null, releasedAt: null, failureReason: null, cleanupStatus: null, metadata: null, createdAt: now, updatedAt: now } },
       },
@@ -114,11 +113,10 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       }).where(eq(environmentLeases.id, lease.id));
       return { kind: "description", taskId: lease.id };
     });
-    taskRpc.mockRejectedValueOnce(new PluginTaskOwnershipPendingError());
     input.workspace.executionTarget = { ...sandbox, leaseId: lease.id, runnerTask: taskRpc,
       reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: true },
       runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } } as never;
-    input.session.taskSessionDecodedParams = { sessionId: priorSession };
+    input.session.taskResumeSessionId = priorSession;
     const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Cloud is unavailable"));
     try {
       const selected = await selectHeartbeatRuntime(db, input);
@@ -129,7 +127,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       expect(saved.nativeSessionId).not.toBe(priorSession);
       expect(await selected.getNativeFreshSessionHandoff?.()).toBe("Earlier context");
       expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]).toEqual(issue);
-      expect(taskRpc).toHaveBeenCalledTimes(2);
+      expect(taskRpc).toHaveBeenCalledOnce();
       expect(network).not.toHaveBeenCalled();
 
       // A lost reply after committing selection must allow the same replacement run to retry.

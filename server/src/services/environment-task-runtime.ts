@@ -18,7 +18,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
 import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
-import { assertPluginTaskOwnershipDispatch, PluginTaskOwnershipPendingError, readyPortableTaskSource, reconcilePluginTaskOwnership, replayPluginTaskOwnership } from "./plugin-task-ownership.js";
+import { assertPluginTaskOwnershipDispatch, PluginTaskOwnershipPendingError, readyPortableTaskSource, reconcilePluginTaskAdmission } from "./plugin-task-ownership.js";
 
 export function isSettledReadyRunnerState(state: Record<string, unknown>): boolean {
   const commands = state.processedCommands;
@@ -54,6 +54,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   leaseId: string;
   operation: PluginEnvironmentTaskOperation;
   executionContext?: unknown;
+  ownershipSignal?: AbortSignal;
   /** Physical task captured by an existing owner, independent of the mutable lease. */
   expectedTaskId?: string;
 }): Promise<PluginEnvironmentTaskResult> {
@@ -78,15 +79,8 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   const ownership = operation.kind === "ensure_ownership";
   if (operation.kind === "describe" && metadata.portableTaskOwnershipReady !== true && metadata.portableTaskSuccessor === undefined &&
       (metadata.portableTaskPredecessor !== undefined || typeof metadata.portableTaskPreviousLeaseId === "string")) {
-    const dispatch = (request: Extract<PluginEnvironmentTaskOperation, {kind: "ensure_ownership"}>) =>
-      executeEnvironmentTask(db, workers, { ...input, operation: request });
-    if (metadata.portableTaskPredecessor !== undefined) {
-      await replayPluginTaskOwnership(db, lease, dispatch);
-    } else if (typeof metadata.portableTaskPreviousLeaseId === "string") {
-      const result = await reconcilePluginTaskOwnership(db, { companyId: input.companyId,
-        sourceLeaseId: metadata.portableTaskPreviousLeaseId, targetLeaseId: lease.id, policy: "ordinary" }, dispatch);
-      if (result.status !== "ready") throw new PluginTaskOwnershipPendingError();
-    }
+    await reconcilePluginTaskAdmission(db, lease, request =>
+      executeEnvironmentTask(db, workers, { ...input, operation: request }), context?.signal ?? input.ownershipSignal);
     return executeEnvironmentTask(db, workers, input);
   }
   const requiresOwnership = !["ensure_ownership", "status", "stop", "complete"].includes(operation.kind);

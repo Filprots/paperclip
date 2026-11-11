@@ -1,4 +1,3 @@
-import { waitForPluginTaskOwnership } from "../plugin-task-ownership.js";
 import { assertPaperclipRunnerBinaryConfiguration } from "../native-runtime/native-codex-runner.js";
 import { readNativeWorkspaceMigration, migratedNativeExecutionCwd } from "../native-runtime/native-workspace-migration.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
@@ -49,7 +48,6 @@ import {
   buildNativeRuntimeContext,
   ensureNativeCompletionContract,
   findNativeSessionResumeRun,
-  isNativeSessionId,
   isUnusedNativeSessionBootstrap,
   isUnusedLegacyNativeRetryReplacement,
   materializeNativeInteractionResponses,
@@ -119,9 +117,7 @@ export interface HeartbeatRuntimeSelectionInput {
   session: {
     persistedNativeExecutionInput: NativeExecutionInput | null;
     persistedRunnerProfile: Record<string, unknown>;
-    taskSessionCredentialCompatible: boolean;
-    taskSessionDecodedParams: Record<string, unknown> | null;
-    taskSessionForRun: { lastRunId: string | null } | null;
+    taskResumeSessionId: string | null;
     isFailedChatRunRetry: boolean;
     getFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   };
@@ -150,7 +146,6 @@ export interface HeartbeatRuntimeSelectionInput {
   trace: { providerTraceRequested: boolean; providerTraceCapture: { metadata: { id: string } } | null };
   issuesSvc: Pick<ReturnType<typeof issueService>, "addComment">;
   runtimeEnv: Record<string, string | undefined>;
-  signal?: AbortSignal;
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
   onAdapterEvent: (event: AdapterRuntimeEvent) => Promise<void>;
   // Teardown must observe these updates even when a later preparation step throws.
@@ -316,8 +311,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     onNativeLifecycleSelected, onProviderResourceDisposition, onNativeOwnershipHeld, stopControllerLease } = input;
   const { issueRef, issueContext, context, executionContinuation, safeWakeComments, safeWakeCommentContext,
     paperclipWakePayload, acceptedPlanContinuationWake } = input.task;
-  const { persistedNativeExecutionInput, persistedRunnerProfile, taskSessionCredentialCompatible, taskSessionDecodedParams,
-    taskSessionForRun, isFailedChatRunRetry, getFreshSessionHandoff } = input.session;
+  const { persistedNativeExecutionInput, persistedRunnerProfile, taskResumeSessionId, isFailedChatRunRetry, getFreshSessionHandoff } = input.session;
   const { persistedExecutionWorkspace, executionWorkspace, executionTarget, activeEnvironmentLease, isDotRun, projectRepositoryPaths } = input.workspace;
   const { runtimeConfig, runtimeSkillEntries, runScopedMentionedSkillKeys, instructionCopy, agentIdentity, issueAssigneeOverrides, resolvedConfig, managedAiRuntime } = input.config;
   const runOptions = input.recovery;
@@ -458,8 +452,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     const portableLease = activeEnvironmentLease?.lease;
     if (portableLease?.metadata?.portableTaskPreviousLeaseId && executionTarget?.kind === "remote" &&
         executionTarget.transport === "sandbox" && executionTarget.runnerTask && executionTarget.leaseId === portableLease.id) {
-      const describe = executionTarget.runnerTask;
-      await waitForPluginTaskOwnership(() => describe({ kind: "describe" }), input.signal);
+      await executionTarget.runnerTask({ kind: "describe" });
       const [current] = await db.select({ metadata: environmentLeases.metadata }).from(environmentLeases)
         .where(and(eq(environmentLeases.id, portableLease.id), eq(environmentLeases.companyId, agent.companyId),
           eq(environmentLeases.heartbeatRunId, run.id)));
@@ -475,9 +468,6 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         }
       }
     }
-    const taskNativeSessionId = reseedPortableSession || !taskSessionCredentialCompatible ? null : readNonEmptyString(
-      taskSessionDecodedParams?.sessionId,
-    );
     // Compatibility for native retry rows created before same-run restart
     // recovery existed. Only an entirely unused replacement row may
     // inherit its source checkpoint; any process/provider evidence on the
@@ -540,15 +530,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         : null;
     const legacyRetrySessionId =
       compatibleLegacyRetrySource?.nativeSessionId;
-    const taskResumeRunId =
-      taskSessionForRun?.lastRunId &&
-      taskSessionForRun.lastRunId !== run.id &&
-      isNativeSessionId(taskNativeSessionId)
-        ? taskSessionForRun.lastRunId
-        : null;
-    const resumableTaskSessionId = reseedPortableSession || isDotRun ? null : taskResumeRunId
-      ? taskNativeSessionId
-      : (legacyRetrySessionId ?? null);
+    const resumableTaskSessionId = reseedPortableSession || isDotRun ? null : taskResumeSessionId ?? legacyRetrySessionId ?? null;
     const requestedNativeSessionId =
       run.nativeSessionId ?? resumableTaskSessionId;
     // A task-session lastRunId can lag a failed turn or point at an older
