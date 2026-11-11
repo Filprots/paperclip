@@ -12,7 +12,7 @@ import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { executeEnvironmentTask, resolvePluginTaskResume } from "../environment-task-runtime.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
-import { readyPortableTaskSource, reconcilePluginTaskOwnership } from "../plugin-task-ownership.js";
+import { readyPortableTaskSource, reconcilePluginTaskOwnership, waitForPluginTaskOwnership } from "../plugin-task-ownership.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
@@ -167,10 +167,12 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
     await expect(f.task()).rejects.toThrow("session ownership unavailable");
     const description = { kind: "description", taskId: "replacement-task",
       runner: { version: "test", digest: `sha256:${"a".repeat(64)}` } } as const;
+    f.workers.call.mockRejectedValueOnce(new Error("worker transport lost again"));
+    f.workers.call.mockResolvedValueOnce({ ...reply, status: "pending" });
     f.workers.call.mockResolvedValueOnce({ ...reply, status: "ready" });
     f.workers.call.mockResolvedValueOnce(description);
-    await expect(describe(restarted)).resolves.toEqual(description);
-    expect(f.workers.call.mock.calls.map(([, , call]) => call.operation)).toEqual([...Array(4).fill(operation), { kind: "describe" }]);
+    await expect(waitForPluginTaskOwnership(() => describe(restarted))).resolves.toEqual(description);
+    expect(f.workers.call.mock.calls.map(([, , call]) => call.operation)).toEqual([...Array(6).fill(operation), { kind: "describe" }]);
     const [target] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
     expect(target.metadata?.portableTaskOwnershipReady).toBe(true);
     const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.sourceLeaseId));

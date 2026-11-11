@@ -1,3 +1,4 @@
+import { PluginTaskOwnershipPendingError } from "../plugin-task-ownership.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
@@ -113,6 +114,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       }).where(eq(environmentLeases.id, lease.id));
       return { kind: "description", taskId: lease.id };
     });
+    taskRpc.mockRejectedValueOnce(new PluginTaskOwnershipPendingError());
     input.workspace.executionTarget = { ...sandbox, leaseId: lease.id, runnerTask: taskRpc,
       reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: true },
       runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } } as never;
@@ -127,7 +129,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       expect(saved.nativeSessionId).not.toBe(priorSession);
       expect(await selected.getNativeFreshSessionHandoff?.()).toBe("Earlier context");
       expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]).toEqual(issue);
-      expect(taskRpc).toHaveBeenCalledOnce();
+      expect(taskRpc).toHaveBeenCalledTimes(2);
       expect(network).not.toHaveBeenCalled();
 
       // A lost reply after committing selection must allow the same replacement run to retry.

@@ -1,3 +1,4 @@
+import { waitForPluginTaskOwnership } from "../plugin-task-ownership.js";
 import { assertPaperclipRunnerBinaryConfiguration } from "../native-runtime/native-codex-runner.js";
 import { readNativeWorkspaceMigration, migratedNativeExecutionCwd } from "../native-runtime/native-workspace-migration.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
@@ -149,6 +150,7 @@ export interface HeartbeatRuntimeSelectionInput {
   trace: { providerTraceRequested: boolean; providerTraceCapture: { metadata: { id: string } } | null };
   issuesSvc: Pick<ReturnType<typeof issueService>, "addComment">;
   runtimeEnv: Record<string, string | undefined>;
+  signal?: AbortSignal;
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
   onAdapterEvent: (event: AdapterRuntimeEvent) => Promise<void>;
   // Teardown must observe these updates even when a later preparation step throws.
@@ -456,7 +458,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     const portableLease = activeEnvironmentLease?.lease;
     if (portableLease?.metadata?.portableTaskPreviousLeaseId && executionTarget?.kind === "remote" &&
         executionTarget.transport === "sandbox" && executionTarget.runnerTask && executionTarget.leaseId === portableLease.id) {
-      await executionTarget.runnerTask({ kind: "describe" });
+      const describe = executionTarget.runnerTask;
+      await waitForPluginTaskOwnership(() => describe({ kind: "describe" }), input.signal);
       const [current] = await db.select({ metadata: environmentLeases.metadata }).from(environmentLeases)
         .where(and(eq(environmentLeases.id, portableLease.id), eq(environmentLeases.companyId, agent.companyId),
           eq(environmentLeases.heartbeatRunId, run.id)));

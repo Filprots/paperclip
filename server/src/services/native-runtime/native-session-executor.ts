@@ -15587,7 +15587,8 @@ async function createRunnerdBackendWithinSessionClaim(
       home: input.managedAiCredentialHome, environment: input.runnerEnvironment ?? {},
     });
     if (credentials.needsWriteback && !input.managedAiCredentialWriteback) throw new Error("Plugin Runner credential writeback authority unavailable");
-    if (!adopting && input.managedAiCredentialWriteback && credentials.accountIdentity) {
+    // Same-lease recovery already has a writeback binding. A portable move creates a new lease.
+    if ((!adopting || input.remoteWarmRecovery?.portableSourceTaskId) && input.managedAiCredentialWriteback && credentials.accountIdentity) {
       if (!remoteTarget.leaseId) throw new Error("Plugin Runner credential lease unavailable");
       await registerPluginTaskCredentialHandoff(input.db, { companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId },
         credentials.accountIdentity, input.managedAiCredentialWriteback);

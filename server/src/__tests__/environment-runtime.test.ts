@@ -1253,6 +1253,41 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     );
   });
 
+  it.each([true, false])("hands off a portable lease only when the next run selects its session (%s)", async resumeSession => {
+    const pluginId = randomUUID();
+    const pluginKey = "paperclip.test-portable-tasks";
+    const seeded = await seedEnvironment({ driver: "plugin", config: { pluginKey, driverKey: "tasks", runnerLifecycleMode: "warm" } });
+    await insertSandboxProviderPlugin(pluginId, { pluginKey, environmentDrivers: [{
+      driverKey: "tasks", kind: "sandbox_provider", supportsTasks: true, warmTaskVersion: 1, sessionHandoffVersion: 1,
+    }] });
+    const issueId = randomUUID(), sessionId = randomUUID(), nextRunId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId: seeded.companyId, title: "Portable session", status: "in_progress" });
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
+    let acquisitions = 0;
+    const call = vi.fn(async (_plugin: string, method: string) => {
+      if (method === "environmentAcquireLease") return { providerLeaseId: `sandbox-${++acquisitions}`,
+        metadata: { ownershipGeneration: `generation-${acquisitions}` } };
+      if (method === "environmentReleaseLease") return { providerLeaseId: "sandbox-1", state: "stopped" };
+      throw new Error(`Unexpected plugin method: ${method}`);
+    });
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call, getWorker: () => ({ supportedMethods: ["environmentResumeLease"] }),
+    } as unknown as PluginWorkerManager });
+    const input = { companyId: seeded.companyId, environment: seeded.environment, issueId, agentId: seeded.agentId,
+      persistedExecutionWorkspace: null, adapterType: "paperclip_runner" };
+    const first = await runtime.acquireRunLease({ ...input, heartbeatRunId: seeded.runId });
+    await db.update(environmentLeases).set({ status: "retained", metadata: {
+      ...first.lease.metadata, runnerTaskIdentity: { sessionId },
+    } }).where(eq(environmentLeases.id, first.lease.id));
+    const next = await runtime.acquireRunLease({ ...input, heartbeatRunId: nextRunId,
+      runnerTaskResumeSessionId: resumeSession ? sessionId : null });
+    expect(next.lease.providerLeaseId).toBe("sandbox-2");
+    expect(next.lease.metadata?.portableTaskPreviousLeaseId).toBe(resumeSession ? first.lease.id : undefined);
+    expect(call.mock.calls.map(([, method]) => method)).toEqual(resumeSession
+      ? ["environmentAcquireLease", "environmentAcquireLease"]
+      : ["environmentAcquireLease", "environmentReleaseLease", "environmentAcquireLease"]);
+  });
+
   it.each(["same task", "different task", "different agent", "no task"])(
     "scopes projectless reusable leases to their task and agent: %s", async (scenario) => {
     const seeded = await seedReusablePluginSandboxLease();

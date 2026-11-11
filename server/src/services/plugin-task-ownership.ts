@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult } from "@paperclipai/plugin-sdk";
@@ -15,6 +16,29 @@ type OwnershipClaim = {
 
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
+export class PluginTaskOwnershipPendingError extends Error {
+  constructor() {
+    super("native_portable_task_ownership_pending");
+  }
+}
+
+/** Keep pre-dispatch admission on the same run and lease while the claim is unresolved. */
+export async function waitForPluginTaskOwnership<T>(describe: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  let backoffMs = 250;
+  for (;;) {
+    signal?.throwIfAborted();
+    try {
+      const result = await describe();
+      signal?.throwIfAborted();
+      return result;
+    } catch (error) {
+      if (!(error instanceof PluginTaskOwnershipPendingError)) throw error;
+    }
+    await delay(backoffMs, undefined, { signal });
+    backoffMs = Math.min(backoffMs * 2, 5_000);
+  }
+}
 
 function unavailable(): never {
   throw new Error("native_portable_task_ownership_unverified");
@@ -114,12 +138,17 @@ async function ownershipClaim(db: Db, input: {
 
 export async function reconcilePluginTaskOwnership(db: Db, input: Parameters<typeof ownershipClaim>[1],
   dispatch: (operation: OwnershipOperation) => Promise<PluginEnvironmentTaskResult>): Promise<OwnershipResult> {
-  const claim = await ownershipClaim(db, input);
-  const result = await dispatch(claim.operation);
-  if (result.kind !== "ownership" || result.operationId !== claim.operation.operationId ||
-      result.targetGeneration !== claim.operation.targetGeneration) return unavailable();
-  if (result.status === "ready") await ownershipClaim(db, input, result);
-  return result;
+  try {
+    const claim = await ownershipClaim(db, input);
+    const result = await dispatch(claim.operation);
+    if (result.kind !== "ownership" || result.operationId !== claim.operation.operationId ||
+        result.targetGeneration !== claim.operation.targetGeneration) return unavailable();
+    if (result.status === "ready") await ownershipClaim(db, input, result);
+    return result;
+  } catch (error) {
+    if ((object(object(error).cause).code ?? object(error).code) === "55P03") throw new PluginTaskOwnershipPendingError();
+    throw error;
+  }
 }
 
 export function assertPluginTaskOwnershipDispatch(lease: Lease, operation: OwnershipOperation) {
@@ -139,7 +168,7 @@ export async function replayPluginTaskOwnership(db: Db, lease: Lease,
   const result = await reconcilePluginTaskOwnership(db, {
     companyId: lease.companyId, sourceLeaseId: claim.sourceLeaseId, targetLeaseId: lease.id, policy: operation.data.policy,
   }, dispatch);
-  if (result.status !== "ready") throw new Error("native_portable_task_ownership_pending");
+  if (result.status !== "ready") throw new PluginTaskOwnershipPendingError();
 }
 
 export async function readyPortableTaskSource(db: Db, companyId: string, targetLeaseId: string, identity: unknown,

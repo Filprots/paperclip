@@ -18,7 +18,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
 import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
-import { assertPluginTaskOwnershipDispatch, readyPortableTaskSource, reconcilePluginTaskOwnership, replayPluginTaskOwnership } from "./plugin-task-ownership.js";
+import { assertPluginTaskOwnershipDispatch, PluginTaskOwnershipPendingError, readyPortableTaskSource, reconcilePluginTaskOwnership, replayPluginTaskOwnership } from "./plugin-task-ownership.js";
 
 export function isSettledReadyRunnerState(state: Record<string, unknown>): boolean {
   const commands = state.processedCommands;
@@ -85,7 +85,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     } else if (typeof metadata.portableTaskPreviousLeaseId === "string") {
       const result = await reconcilePluginTaskOwnership(db, { companyId: input.companyId,
         sourceLeaseId: metadata.portableTaskPreviousLeaseId, targetLeaseId: lease.id, policy: "ordinary" }, dispatch);
-      if (result.status !== "ready") throw new Error("native_portable_task_ownership_pending");
+      if (result.status !== "ready") throw new PluginTaskOwnershipPendingError();
     }
     return executeEnvironmentTask(db, workers, input);
   }
@@ -217,8 +217,12 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   const plugin = await pluginRegistryService(db).getById(metadata.pluginId);
   const driver = plugin?.manifestJson.environmentDrivers?.find(value => value.driverKey === metadata.driverKey);
   if (!plugin || plugin.status !== "ready" || !driver?.supportsTasks ||
-      !plugin.manifestJson.capabilities.includes("environment.drivers.register") ||
-      !workers.getWorker(plugin.id)?.supportedMethods.includes("environmentTask")) {
+      !plugin.manifestJson.capabilities.includes("environment.drivers.register")) {
+    throw new Error("Plugin-provided Runner execution provider unavailable");
+  }
+  const worker = workers.getWorker(plugin.id);
+  if (ownership && !worker && driver.sessionHandoffVersion === 1) throw new PluginTaskOwnershipPendingError();
+  if (!worker?.supportedMethods.includes("environmentTask")) {
     throw new Error("Plugin-provided Runner execution provider unavailable");
   }
   if (operation.kind === "resume" && operation.handoffCredential && driver.sessionHandoffVersion !== 1) {
@@ -464,7 +468,13 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     const timeout = operation.kind === "copilot_metadata" ? Math.max(1, Math.min(40_000, Number(probe?.expiresAtMs) - Date.now()))
       : executionContext ? Math.max(1, context!.deadlineAtMs - Date.now())
       : driver.sessionHandoffVersion === 1 && (ownership || operation.kind === "describe") ? 90_000 : 15_000;
-    const result = await callWorker("environmentTask", params, timeout);
+    const result = await callWorker("environmentTask", params, timeout).catch(error => {
+      // The plugin may have applied the saved claim before its reply was lost.
+      // Keep the same operation ID; the RPC response below still needs validation.
+      if (ownership && (!(error instanceof JsonRpcCallError) ||
+          error.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT || error.code === PLUGIN_RPC_ERROR_CODES.WORKER_UNAVAILABLE)) throw new PluginTaskOwnershipPendingError();
+      throw error;
+    });
     if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
     if (operation.kind === "submit" && parsed.kind === "admission_rejected") {
@@ -558,6 +568,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     }
     return parsed;
   } catch (error) {
+    if (error instanceof PluginTaskOwnershipPendingError) throw error;
     const diagnostic = operation.kind === "submit" && operation.resumeFrom ? readEnvironmentTaskErrorDiagnostic(error) : null;
     if (diagnostic) throw new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
       message: "Plugin Runner source state unavailable",

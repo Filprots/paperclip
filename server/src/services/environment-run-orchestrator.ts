@@ -308,6 +308,7 @@ export function environmentRunOrchestrator(
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     runnerTaskProjectIds?: readonly string[];
+    runnerTaskResumeSessionId?: string | null;
     /** Existing live runner recovery must use its original active lease, including ephemeral leases. */
     reattachRemoteLease?: { kind?: "sandbox"; leaseId: string; providerLeaseId: string; remoteCwd: string }
       | { kind: "plugin_task"; leaseId: string };
@@ -365,6 +366,7 @@ export function environmentRunOrchestrator(
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
       executionWorkspaceSettings: input.executionWorkspaceSettings,
       runnerTaskProjectIds: input.runnerTaskProjectIds,
+      runnerTaskResumeSessionId: input.runnerTaskResumeSessionId,
       adapterType: input.adapterType ?? null,
       warmRunnerIdleTimeoutMs,
       runnerReconnectGraceMs,

@@ -2905,6 +2905,9 @@ export function heartbeatService(
           configSnapshot,
           secretManifest,
           managedAiCredentialIdentity: managedAiRuntime?.identity,
+          runnerTaskResumeSessionId: run.nativeSessionId ?? (preparedSession.taskSessionCredentialCompatible &&
+            preparedSession.taskSessionForRun?.lastRunId && preparedSession.taskSessionForRun.lastRunId !== run.id
+            ? readNonEmptyString(taskSessionDecodedParams?.sessionId) : null),
         },
         reuse: {
           requestedShouldReuseExisting,
@@ -2934,7 +2937,7 @@ export function heartbeatService(
         appendRunEvent,
       });
       if (managedAiRuntime && aiBinding) {
-        try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
+        try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget, executionControl.controller.signal); }
         catch (error) { throw classifyManagedProjectAuthFailure(error, agent.id); }
       }
       const remoteExecution = realizationResult.remoteExecution;
@@ -3516,6 +3519,7 @@ export function heartbeatService(
           trace: { providerTraceRequested, providerTraceCapture },
           issuesSvc,
           runtimeEnv,
+          signal: executionControl.controller.signal,
           beforeNativeRuntimeSelection: options.beforeNativeRuntimeSelection,
           onAdapterEvent,
           onNativeLifecycleSelected: (telemetry) => {
