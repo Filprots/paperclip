@@ -157,7 +157,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     runner: z.object({ version: z.string().min(1), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
     warmTaskVersion: z.literal(1).optional(),
     releaseResumeVersion: z.literal(1).optional(),
-    portableOwnershipVersion: z.literal(1).optional(),
+    sessionHandoffVersion: z.literal(1).optional(),
     launchPreparationVersion: z.literal(1).optional(),
     executionContextVersion: z.literal(1).optional(),
     /** Each version attests stopped-source recovery for its provider independently. */

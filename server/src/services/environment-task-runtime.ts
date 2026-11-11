@@ -199,7 +199,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       !workers.getWorker(plugin.id)?.supportedMethods.includes("environmentTask")) {
     throw new Error("Plugin-provided Runner execution provider unavailable");
   }
-  if (ownership && driver.portableOwnershipVersion !== 1) throw new Error("Plugin Runner ownership reconciliation unavailable");
+  if (ownership && driver.sessionHandoffVersion !== 1) throw new Error("Plugin Runner ownership reconciliation unavailable");
   const callWorker = async <M extends HostToWorkerMethodName>(method: M, params: HostToWorkerMethods[M][0], timeout?: number): Promise<HostToWorkerMethods[M][1]> => {
     if (!context) {
       const cleanup = metadata.runnerTaskStartupCleanup as { contextId?: unknown; requiresPreparationStop?: unknown } | undefined;
@@ -433,7 +433,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     };
     const timeout = operation.kind === "copilot_metadata" ? Math.max(1, Math.min(40_000, Number(probe?.expiresAtMs) - Date.now()))
       : executionContext ? Math.max(1, context!.deadlineAtMs - Date.now())
-      : driver.portableOwnershipVersion === 1 && (ownership || operation.kind === "describe") ? 90_000 : 15_000;
+      : driver.sessionHandoffVersion === 1 && (ownership || operation.kind === "describe") ? 90_000 : 15_000;
     const result = await callWorker("environmentTask", params, timeout);
     if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);

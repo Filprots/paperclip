@@ -84,7 +84,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
       leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "source-fixture", version: "1.0.0", status: "ready",
-      manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true, portableOwnershipVersion: 1 }] } as never });
+      manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true, sessionHandoffVersion: 1 }] } as never });
     await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "plugin", status: "active",
       config: { pluginKey: pluginId, driverKey: "tasks" } });
     const metadata = { driver: "plugin", pluginId, driverKey: "tasks", runnerTaskLease: true };

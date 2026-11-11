@@ -3441,15 +3441,15 @@ function createPluginEnvironmentDriver(
       )) : [];
       if (candidates.length > 1) throw new Error("Ambiguous retained plugin task ownership");
       const previous = candidates[0];
-      const portablePrevious = driver.portableOwnershipVersion === 1 && previous?.providerLeaseId &&
+      const handoffPrevious = driver.sessionHandoffVersion === 1 && previous?.providerLeaseId &&
         previous.metadata?.runnerTaskFingerprint === fingerprint &&
         typeof (previous.metadata?.providerMetadata as { ownershipGeneration?: unknown } | undefined)?.ownershipGeneration === "string"
         ? previous : undefined;
       let resumed: PluginEnvironmentLease | undefined;
-      if (!portablePrevious && previous?.providerLeaseId && previous.metadata?.runnerTaskFingerprint !== fingerprint) {
+      if (!handoffPrevious && previous?.providerLeaseId && previous.metadata?.runnerTaskFingerprint !== fingerprint) {
         // A changed mount scope must retire the old process before checkpoint recovery.
         await this.releaseRunLease({environment:input.environment,lease:toEnvironmentLeaseSnapshot(previous),status:"released"});
-      } else if (!portablePrevious && previous?.providerLeaseId) {
+      } else if (!handoffPrevious && previous?.providerLeaseId) {
         // Resume only inspects the exact computer; an unavailable reply must not create a replacement.
         resumed = await workerManager.call(plugin.id, "environmentResumeLease", {
           driverKey: parsed.config.driverKey, companyId: input.companyId, environmentId: input.environment.id,
@@ -3508,7 +3508,7 @@ function createPluginEnvironmentDriver(
           ...(warm ? {runnerTaskProjectIds:[...input.runnerTaskProjectIds ?? []]} : {}),remoteCwd:".",
           ...(input.agentId ? { agentId: input.agentId } : {}),
           providerMetadata: providerLease.metadata ?? {},
-          ...(portablePrevious ? { portableTaskPreviousLeaseId: portablePrevious.id } : {}),
+          ...(handoffPrevious ? { portableTaskPreviousLeaseId: handoffPrevious.id } : {}),
           ...(input.purpose ? { purpose: input.purpose, loginCommandKey: input.loginCommandKey } : {}),
           environmentId: input.environment.id,
           ...(input.purpose !== "login" && input.adapterType === "paperclip_runner" && driver.supportsTasks === true ? { runnerTaskLease: true } : {}),
