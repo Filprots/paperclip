@@ -40,6 +40,7 @@ import {
 } from "@paperclipai/db";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { heartbeatService } from "../heartbeat.js";
+import { executionRecoverySettlementNote } from "../execution-recovery-resolution.js";
 
 import {
   canonicalNativeRuntimeContextDigest,
@@ -3154,6 +3155,47 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
       restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
       kind: "blocked", runId: fixture.runId, reason })]);
+  });
+
+  it("bootstraps again after a remote session.open rejection whose runner exit the controller proved", async () => {
+    // Staging run 61d2e06e with the new proof: the runner answered session.open
+    // with a definite startup failure, then the controller's close settled it
+    // and observed its exit. No provider session, event or checkpoint exists.
+    const fixture = await seedExitedRemoteRunner("STARTUP-REJECTED-EXIT-PROVEN", {
+      originalFailureCode: "provider_session_open_rejected", runnerExitConfirmed: true }, 1);
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "bootstrap_incomplete", runId: fixture.runId })]);
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_runner_exited_before_provider_work" });
+  });
+
+  it("keeps an older release's remote session.open rejection held without the runner exit proof", async () => {
+    const fixture = await seedExitedRemoteRunner("STARTUP-REJECTED-NO-PROOF", {
+      originalFailureCode: "provider_session_open_rejected" }, 1);
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "blocked", runId: fixture.runId, reason: "ambiguous_remote_recovery_evidence" })]);
+  });
+
+  it("records that a held same-run retry was not a server restart", async () => {
+    // Staging run 61d2e06e: a remote session.open rejection saved by an older
+    // release, held when its due retry re-entered restart recovery. No server
+    // restarted, so the hold must not say one did.
+    const fixture = await seedExitedRemoteRunner("SAME-RUN-RETRY-HOLD", {
+      originalFailureCode: "provider_session_open_rejected" }, 1);
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor, restartKind: "hard",
+      runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "blocked", runId: fixture.runId, reason: "ambiguous_remote_recovery_evidence" })]);
+    const [action] = await fixture.db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    expect(action).toMatchObject({ cause: "native_restart_recovery_blocked",
+      evidence: expect.objectContaining({ trigger: "same_run_retry" }) });
+    const note = executionRecoverySettlementNote({ current: true, cause: action.cause,
+      workspaceRestoreFailed: false, trigger: action.evidence.trigger });
+    expect(note).not.toContain("server restart");
+    expect(note).toContain("Automatic retry of this run stopped");
   });
 
   it.each<[string, Parameters<typeof seedUnlaunchedRemoteClaim>[1], { kind: string; reason: string }]>([

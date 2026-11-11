@@ -172,6 +172,16 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 
 ## Workspace completion and maintenance
 
+A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
+Before creating a fresh workspace for an admitted Retry, Core may send the
+original task-owned workspace's `prepare` request with `verifyExisting: true`.
+The provider must verify a completed checkout without creating or fetching
+one and return `prepared` with `created: false`. Core checks prior writer
+settlement and continues normal preparation on the retained workspace after
+verification. A missing or unconfirmed checkout leaves the fresh retry
+fallback in place. Local workspaces use the same ownership and writer
+checks with Core's existing local Git verification.
+
 A storage provider can declare `workspaceProvider.finalizationVersion: 1`.
 Core then sends `workspaceOperation` with `operation.kind: "finalize"`, the retained
 binding, lifecycle generation, and originating `runId` and `agentId`. The operation
@@ -336,12 +346,20 @@ not authorize new work or file access through that lease.
 Temporary credential homes are not needed after the originating run ends.
 An explicit reset to a different normalized session can retire a warm owner
 whose close failed only because it could not prove checkpoint suspension. Core
-requires the exact lease-bound task's `executionStopped: true` receipt, a
-successful `complete` handoff, and settled Core tool results first. It then
-collects stopped instruction files before it releases the in-memory owner. The old checkpoint remains evidence;
-it is not reused by the new session. A failed handoff, failed file collection,
-unsettled Core tool result, other close error, or continuation of the same
-session still blocks replacement.
+requires the exact lease-bound task's `executionStopped: true` receipt and a
+successful `complete` handoff first. When the close left them unproven, the new
+run requests them itself: one confirmed `stop` (not resent once confirmed),
+the credential snapshot, then `complete`. A warm owner without a task needs its
+Runner's own durable suspension instead. Unsettled Core tool results do not
+block this reset: a governed-wait park leaves one by design, its run is already
+terminal, its provider is stopped, and the new session never replays it. Core
+then collects stopped instruction files before it releases the in-memory owner.
+With that task receipt, any close error qualifies, including a controller
+journal drain that outlived the close grace: the old journal lives in the
+discarded session's own state root. The old checkpoint remains evidence; it is
+not reused by the new session. A handoff that still fails, failed file
+collection, another close error from an owner without a task, or continuation
+of the same session still blocks replacement.
 A controller restart is not required for this stopped-owner reset path.
 
 Core ends a dispatched task lease with `stop`, `status`, and `complete`. When
