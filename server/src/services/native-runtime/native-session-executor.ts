@@ -15289,6 +15289,7 @@ async function createRunnerdBackendWithinSessionClaim(
       releaseResumeVersion: description.releaseResumeVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
+      sessionHandoff: !!input.remoteWarmRecovery?.portableSourceTaskId,
       onResumed: async source => updateReleasedWarmRunner(input.execution, source, input.remoteWarmRecovery?.portableSourceTaskId ?? description.taskId, null),
       onRetired: async source => updateReleasedWarmRunner(input.execution, source, description.taskId, null),
       adoptIdentity: adoptionIdentity ?? (adopting && prior ? {

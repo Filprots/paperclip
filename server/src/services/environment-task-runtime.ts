@@ -199,6 +199,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       !workers.getWorker(plugin.id)?.supportedMethods.includes("environmentTask")) {
     throw new Error("Plugin-provided Runner execution provider unavailable");
   }
+  if (operation.kind === "resume" && operation.handoffCredential && driver.sessionHandoffVersion !== 1) {
+    throw new Error("Plugin Runner credential handoff unavailable");
+  }
   if (ownership && driver.sessionHandoffVersion !== 1) throw new Error("Plugin Runner ownership reconciliation unavailable");
   const callWorker = async <M extends HostToWorkerMethodName>(method: M, params: HostToWorkerMethods[M][0], timeout?: number): Promise<HostToWorkerMethods[M][1]> => {
     if (!context) {

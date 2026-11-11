@@ -25,12 +25,13 @@ const githubBroker = z.object({ url: z.string().url().max(2000).refine(value => 
     return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
   } catch { return false; }
 }, "Expected a credential-free HTTP broker URL"), token: credentialValue }).strict();
+const claudeCredentialEnvironment = z.object({
+  CLAUDE_CODE_OAUTH_TOKEN: credentialValue.optional(), ANTHROPIC_API_KEY: credentialValue.optional(),
+}).strict().refine(env => Object.values(env).filter(Boolean).length === 1, "Select one Claude credential");
 /** Only provider authentication is transferred. Paths and executable settings remain provider-owned. */
 export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("codex-auth-json"), authJson: credentialValue }).strict(),
-  z.object({ type: z.literal("claude-env"), environment: z.object({
-    CLAUDE_CODE_OAUTH_TOKEN: credentialValue.optional(), ANTHROPIC_API_KEY: credentialValue.optional(),
-  }).strict().refine(env => Object.values(env).filter(Boolean).length === 1, "Select one Claude credential") }).strict(),
+  z.object({ type: z.literal("claude-env"), environment: claudeCredentialEnvironment }).strict(),
 ]);
 export type PluginEnvironmentTaskCredential = z.infer<typeof environmentTaskCredentialSchema>;
 
@@ -114,7 +115,9 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("status") }).strict(),
   z.object({ kind: z.literal("connection") }).strict(),
   z.object({ kind: z.literal("release"), identity: durableIdentity }).strict(),
-  z.object({ kind: z.literal("resume"), identity: durableIdentity, bootstrapTicket: credentialValue }).strict(),
+  z.object({ kind: z.literal("resume"), identity: durableIdentity, bootstrapTicket: credentialValue,
+    handoffCredential: z.object({ accountIdentity: z.string().min(1).max(1024), environment: claudeCredentialEnvironment }).strict().optional(),
+  }).strict(),
   z.object({
     kind: z.literal("ensure_ownership"),
     operationId: z.string().uuid(),
