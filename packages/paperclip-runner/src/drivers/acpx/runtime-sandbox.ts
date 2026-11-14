@@ -352,7 +352,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   if (input.agent === "pi" && (input.providerPolicy === undefined || typeof input.providerPolicy.readOnly !== "boolean")) {
     throw new Error("Pi admission requires an explicit task execution policy");
   }
-  const policy = await validateProviderPolicy(input.providerPolicy);
+  const policy = await validateProviderPolicy(input.providerPolicy, input.agent);
   const expectedRoot = input.binding.runtimeRoot;
   if (resolve(expectedRoot) !== expectedRoot) {
     throw new Error("ACPX runtime root must be an absolute normalized path");
@@ -611,7 +611,18 @@ export async function prepareAcpxRuntimeSandbox(input: {
   };
 }
 
-async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined): Promise<{
+/**
+ * IRRIS fork: Claude receives its system instructions inside the ACP session
+ * request (`systemPrompt.append`, which the Claude SDK sends in its initialize
+ * message), not through the environment or the command line. The 32 KiB limit
+ * exists for the providers whose instructions travel in an environment
+ * variable. Upstream applies it to Claude too and rejects a larger session as
+ * `admission_sandbox` without naming the size.
+ */
+const CLAUDE_SYSTEM_INSTRUCTIONS_MAX_BYTES = 128 * 1024;
+const DEFAULT_SYSTEM_INSTRUCTIONS_MAX_BYTES = 32 * 1024;
+
+async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined, agent?: string): Promise<{
   readOnly: boolean; readRoots: string[]; protectedPaths: string[]; systemInstructions: string;
 }> {
   if (policy !== undefined && typeof policy.readOnly !== "boolean") throw new Error("Provider task execution policy is invalid");
@@ -624,7 +635,8 @@ async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefi
     }));
   };
   const systemInstructions = policy?.systemInstructions ?? "";
-  if (typeof systemInstructions !== "string" || systemInstructions.includes("\0") || Buffer.byteLength(systemInstructions) > 32 * 1024) throw new Error("Provider runtime instructions exceed their bounded size");
+  const maxInstructionBytes = agent === "claude" ? CLAUDE_SYSTEM_INSTRUCTIONS_MAX_BYTES : DEFAULT_SYSTEM_INSTRUCTIONS_MAX_BYTES;
+  if (typeof systemInstructions !== "string" || systemInstructions.includes("\0") || Buffer.byteLength(systemInstructions) > maxInstructionBytes) throw new Error(`Provider runtime instructions exceed their bounded size (${maxInstructionBytes} bytes)`);
   return {
     readOnly: policy?.readOnly ?? true,
     readRoots: await paths(policy?.readRoots, true),
