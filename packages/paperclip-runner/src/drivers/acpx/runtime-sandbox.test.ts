@@ -370,6 +370,26 @@ describe("ACPX runtime sandbox", () => {
     await expect(prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "pi", providerPolicy: { readOnly: false, systemInstructions: "x".repeat(32 * 1024 + 1) } })).rejects.toThrow("bounded size");
   });
 
+  it("bounds Claude system instructions at the host bound and the other agents at 32 KiB", async () => {
+    const claude = await sandboxFixture("claude");
+    const accepted = await prepareAcpxRuntimeSandbox({
+      binding: claude.binding, agent: "claude",
+      providerPolicy: { readOnly: false, systemInstructions: "x".repeat(256 * 1024) },
+    });
+    expect(accepted.persistedEnvironment).toBeDefined();
+    await expect(prepareAcpxRuntimeSandbox({
+      binding: claude.binding, agent: "claude",
+      providerPolicy: { readOnly: false, systemInstructions: "x".repeat(256 * 1024 + 1) },
+    })).rejects.toThrow("bounded size (262144 bytes)");
+    for (const agent of ["pi", "cursor", "copilot"] as const) {
+      const fixture = await sandboxFixture(agent);
+      await expect(prepareAcpxRuntimeSandbox({
+        binding: fixture.binding, agent,
+        providerPolicy: { readOnly: false, systemInstructions: "x".repeat(32 * 1024 + 1) },
+      })).rejects.toThrow("bounded size (32768 bytes)");
+    }
+  });
+
   it("re-prepares and re-synchronizes an existing private sandbox", async () => {
     const fixture = await sandboxFixture("claude");
     const first = await prepareAcpxRuntimeSandbox({
